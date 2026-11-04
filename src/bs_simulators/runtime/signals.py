@@ -24,14 +24,6 @@ class SignalDescriptor:
         return asdict(self)
 
 
-PENDULUM_SIGNALS = (
-    SignalDescriptor('theta', 'rad', 'float64', 'output'),
-    SignalDescriptor('omega', 'rad/s', 'float64', 'output'),
-    SignalDescriptor('torque', 'N m', 'float64', 'input'),
-    SignalDescriptor('time', 's', 'float64', 'output', lower=0.0),
-    SignalDescriptor('status', '', 'string', 'output'),
-)
-
 
 def controller_identifier(value):
     if not isinstance(value, str) or not value or value != value.strip() or len(value) > 128:

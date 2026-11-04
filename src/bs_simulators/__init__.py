@@ -9,11 +9,16 @@ from importlib import import_module
 
 __version__ = '0.1.0'
 
-__all__ = ['PendulumSimulation', 'InMemoryAdapter', 'SimulationPort',
+__all__ = ['Simulation', 'Stepper', 'ODEStepper', 'DAEStepper',
+           'create_pendulum', 'InMemoryAdapter', 'SimulationPort',
            'SignalDescriptor', '__version__']
 
 _EXPORTS = {
-    'PendulumSimulation': '.runtime.core',
+    'Simulation': '.runtime.core',
+    'Stepper': '.runtime.protocols',
+    'ODEStepper': '.runtime.steppers',
+    'DAEStepper': '.runtime.steppers',
+    'create_pendulum': '.presets',
     'InMemoryAdapter': '.comms.adapters',
     'SimulationPort': '.runtime.protocols',
     'SignalDescriptor': '.runtime.signals',

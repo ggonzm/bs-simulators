@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import bs_simulators as simulation_api
-from bs_simulators import InMemoryAdapter, PendulumSimulation, SimulationPort
+from bs_simulators import InMemoryAdapter, create_pendulum, Simulation, SimulationPort
 from bs_simulators.runtime import core
 from bs_simulators.comms.http import create_server
 
@@ -23,13 +23,15 @@ def clock(monkeypatch):
 
 
 def test_public_interface_has_no_unpaced_stepper():
-    assert 'ODEStepper' not in simulation_api.__all__
-    assert not hasattr(simulation_api, 'ODEStepper')
-    assert 'step' not in dir(PendulumSimulation())
+    assert 'Simulation' in simulation_api.__all__
+    assert 'ODEStepper' in simulation_api.__all__
+    assert isinstance(create_pendulum(), Simulation)
+    assert not hasattr(simulation_api, 'PendulumSimulation')
+    assert 'step' not in dir(create_pendulum())
 
 
 def test_signal_metadata_and_named_measurements():
-    simulation = PendulumSimulation(theta0=0.2, omega0=-0.3, u0=0.4,
+    simulation = create_pendulum(theta0=0.2, omega0=-0.3, u0=0.4,
                                     active_controller='python')
     adapter = InMemoryAdapter(simulation, controller_id='python')
     metadata = {signal['name']: signal for signal in adapter.describe_signals()}
@@ -58,7 +60,7 @@ def test_signal_metadata_and_named_measurements():
 @pytest.mark.parametrize('mapping', [{}, {'theta': 1}, {'torque': 1, 'theta': 2},
                                      {'torque': np.nan}, {'torque': '0.1'}])
 def test_named_mapping_requires_complete_valid_input_frame(mapping):
-    simulation = PendulumSimulation(active_controller='python')
+    simulation = create_pendulum(active_controller='python')
     adapter = InMemoryAdapter(simulation, controller_id='python')
     accepted = adapter.write_signals({'torque': 0.5})
     before = simulation.snapshot()
@@ -73,7 +75,7 @@ def test_named_mapping_requires_complete_valid_input_frame(mapping):
 
 
 def test_active_controller_is_explicit_and_other_adapter_cannot_override(clock):
-    simulation = PendulumSimulation(active_controller='plc')
+    simulation = create_pendulum(active_controller='plc')
     owner = InMemoryAdapter(simulation, controller_id='plc')
     stranger = InMemoryAdapter(simulation, controller_id='http')
     accepted = owner.write_inputs([0.5])
@@ -91,7 +93,7 @@ def test_active_controller_is_explicit_and_other_adapter_cannot_override(clock):
 
 
 def test_explicit_controller_selection_clears_prior_queued_input_and_receipt_metadata():
-    simulation = PendulumSimulation(active_controller='http', u0=0.2)
+    simulation = create_pendulum(active_controller='http', u0=0.2)
     previous = InMemoryAdapter(simulation, controller_id='http')
     previous.write_inputs([0.9])
     simulation.configure_controller('plc')
@@ -113,7 +115,7 @@ def test_explicit_controller_selection_clears_prior_queued_input_and_receipt_met
     {'source_timestamp': 'nonsense'},
 ])
 def test_invalid_source_time_leaves_received_and_held_input_unchanged(kwargs):
-    simulation = PendulumSimulation(active_controller='python', u0=0.2)
+    simulation = create_pendulum(active_controller='python', u0=0.2)
     adapter = InMemoryAdapter(simulation, controller_id='python')
     adapter.write_inputs([0.6], source_timestamp='2020-01-01T00:00:00Z')
     before = adapter.read_snapshot()
@@ -126,7 +128,7 @@ def test_invalid_source_time_leaves_received_and_held_input_unchanged(kwargs):
 
 
 def test_same_input_is_a_new_receipt_without_expiration(clock):
-    simulation = PendulumSimulation(active_controller='python', u0=0.2)
+    simulation = create_pendulum(active_controller='python', u0=0.2)
     adapter = InMemoryAdapter(simulation, controller_id='python')
     first = adapter.write_inputs([0.4], source_timestamp='2001-01-01T00:00:00Z')
     clock[0] += 100000.0
@@ -145,7 +147,7 @@ def test_same_input_is_a_new_receipt_without_expiration(clock):
 
 
 def test_in_memory_controller_roundtrip_needs_no_http(monkeypatch, tmp_path, clock):
-    simulation = PendulumSimulation(active_controller='python', theta0=0.4, dt=0.1)
+    simulation = create_pendulum(active_controller='python', theta0=0.4, dt=0.1)
     adapter = InMemoryAdapter(simulation, controller_id='python')
     ack = adapter.write_signals({'torque': 0.8}, source_timestamp='2020-01-01T00:00:00Z')
     monkeypatch.setattr(simulation._stop_event, 'wait', lambda timeout: clock.__setitem__(0, clock[0] + timeout) or False)
@@ -171,7 +173,7 @@ def test_in_memory_controller_roundtrip_needs_no_http(monkeypatch, tmp_path, clo
 
 
 def test_applied_input_is_held_across_arbitrary_clock_gaps(monkeypatch, tmp_path, clock):
-    simulation = PendulumSimulation(active_controller='python', dt=0.1)
+    simulation = create_pendulum(active_controller='python', dt=0.1)
     adapter = InMemoryAdapter(simulation, controller_id='python')
     receipt = adapter.write_inputs([0.8])
 
@@ -197,7 +199,7 @@ def test_applied_input_is_held_across_arbitrary_clock_gaps(monkeypatch, tmp_path
 
 
 def test_rejected_sample_does_not_increment_next_accepted_sequence():
-    simulation = PendulumSimulation(active_controller='python')
+    simulation = create_pendulum(active_controller='python')
     adapter = InMemoryAdapter(simulation, controller_id='python')
     first = adapter.write_inputs([0.3])
     with pytest.raises(ValueError):
@@ -284,7 +286,7 @@ def test_named_mapping_orders_a_complete_multi_input_frame_before_submission():
 
 def test_http_uses_structural_port_instead_of_concrete_pendulum():
     plant = _StructuralPlant()
-    server = create_server(plant, port=0)
+    server = create_server(plant, port=0, viewer='pendulum')
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
     worker.start()
     try:
@@ -309,7 +311,7 @@ def test_http_uses_structural_port_instead_of_concrete_pendulum():
 
 
 def test_http_cannot_spoof_the_active_controller():
-    simulation = PendulumSimulation(active_controller='plc')
+    simulation = create_pendulum(active_controller='plc')
     server = create_server(simulation, port=0)
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
     worker.start()

@@ -1,153 +1,191 @@
-# Péndulo: simulación en vivo y reproducción de experimentos
+# Live pendulum simulation and replay
 
-La librería ofrece dos flujos de trabajo:
+The `create_pendulum()` factory configures the generic `Simulation` with the
+numerical pendulum model from `benchmark-systems`.
+It advances continuously, receives complete torque commands and publishes the
+latest state for observation. Completed recordings can be replayed separately
+with the original Matplotlib animation helpers.
 
-- **Offline:** integrar una trayectoria completa con las herramientas actuales
-  y reproducirla con `animations.Pendulum` y `AutoAnimation`.
-- **En vivo:** ejecutar el motor continuamente, recibir entradas de un
-  controlador externo y observar los estados a medida que se calculan.
+## Start an experiment
 
-No se añade un tercer modo público de avance manual. La integración por
-intervalos es un detalle interno necesario para aplicar entradas y verificar el
-motor. Las animaciones existentes, los modelos y los notebooks conservan su API.
+From a prepared source checkout, run:
 
-## Ejecutar el péndulo en vivo
-
-Con Python 3.13 y las dependencias del proyecto, desde su carpeta raíz:
-
-```powershell
-# Terminal 1: simulador y visor local. Ctrl+C para terminar.
+```shell
 pdm run python -m bs_simulators --port 8765 --dt 0.01
+```
 
-# Terminal 2: controlador externo de ejemplo.
+Open [the local viewer](http://127.0.0.1:8765/). The browser draws the pendulum
+using Canvas and polls its state approximately every 50 ms. This display rate
+is independent of the integration interval `dt`. Closing the browser leaves
+the simulation running; Ctrl+C in the simulator terminal stops it.
+
+The default pendulum has mass 1 kg, length 1 m, damping coefficient 0.1,
+initial angle 0.6 rad and zero angular velocity and torque. Useful options are:
+
+| Option | Meaning |
+| --- | --- |
+| `--m`, `--length`, `--drag` | Mass, length and rotational damping |
+| `--theta0`, `--omega0` | Initial angle in rad and angular velocity in rad/s |
+| `--u0` | Initial torque in N m, held until a command is applied |
+| `--dt` | Integration interval in simulated seconds |
+| `--controller` / `--active-controller` | Explicit controller identity; default `http` |
+| `--duration` | Optional simulated duration, a whole number of `dt` intervals |
+| `--record` | New JSONL output path |
+
+Zero angle points vertically downward. The state order is `[theta, omega]`,
+time is in seconds, and the input vector is `[torque]` in N m.
+
+## Send commands from another process
+
+With the simulator running, start the HTTP controller example in a second
+terminal:
+
+```shell
 pdm run python examples/pendulum_sil_controller.py
 ```
 
-Abrir <http://127.0.0.1:8765>. Si PDM no está disponible en el PATH pero ya existe
-el entorno instalado, sustituir `pdm run python` por `.venv/Scripts/python.exe`.
+The controller submits a sequence of torque commands and waits until each is
+reported as applied. Its timing is based on simulated time. After it exits,
+the last applied torque remains active indefinitely until another valid
+command arrives.
 
-El visor tiene fondo blanco, ejes en metros, varilla y masa con los colores y
-proporciones de `animations.Pendulum`. Muestra el tiempo y un estado discreto.
-Los datos técnicos están ocultos en «Datos de la simulación». La imagen se
-dibuja con Canvas; no se envían imágenes Matplotlib en cada actualización.
+## Record and replay
 
-El controlador manda 0, 2 y -1 N·m con dos segundos simulados entre órdenes,
-espera a observarlas aplicadas y termina. El motor continúa con -1 N·m. Antes
-de recibir entradas conserva `u0` (cero por defecto). Cerrar el visor no detiene
-la integración.
-
-## Registrar y reproducir una trayectoria completa
-
-```powershell
+```shell
 pdm run python -m bs_simulators --duration 15 --record pendulum-run.jsonl
+```
 
-# Tras terminar, reproducir con los animadores Matplotlib existentes.
+The recording contains the initial snapshot, one snapshot per completed
+interval and a terminal snapshot. The terminal entry may repeat the last
+physical time and sequence; it does not represent an extra integration step.
+The command preserves existing files and closes the HTTP service when the
+run ends.
+
+After the experiment, export a replay:
+
+```shell
+pdm sync -G dev -G replay
 pdm run python examples/pendulum_sil_replay.py pendulum-run.jsonl --output pendulum-run.gif
 ```
 
-El JSONL guarda el estado inicial, cada intervalo integrado y un estado
-terminal. Este último puede repetir tiempo/secuencia y el ejemplo de replay lo
-filtra. Una ruta ya existente no se sobrescribe. Al alcanzar la duración, el
-proceso termina y cierra también el servicio HTTP. El visor conserva la última
-imagen e indica que no hay conexión.
+The replay filters repeated terminal timestamps and passes the recorded angle
+trajectory to `benchmark_systems.animations.Pendulum` and `AutoAnimation`.
+Pillow writes the GIF. Replay is independent of the live HTTP service.
 
-## Protocolos de Python y adaptadores
+## Access signals directly from Python
 
-`SimulationPort`, definido mediante `typing.Protocol`, describe la interfaz que
-necesita un adaptador: describir señales, leer medidas e instantáneas y entregar
-entradas. Es una interfaz estructural: no obliga a heredar de una clase base.
-
-`InMemoryAdapter` permite usar esa interfaz directamente desde Python, sin
-peticiones HTTP. El servidor HTTP utiliza el mismo adaptador. Un futuro puente
-OPC UA o Modbus podrá convertir sus mensajes a estas operaciones y publicar
-las medidas en sentido inverso.
+`InMemoryAdapter` provides the same input and measurement interface without
+HTTP requests:
 
 ```python
-from bs_simulators import InMemoryAdapter, PendulumSimulation
+import time
+from bs_simulators import InMemoryAdapter, create_pendulum
 
-simulation = PendulumSimulation(active_controller="plc", theta0=0.6)
-bridge = InMemoryAdapter(simulation, controller_id="plc")
-bridge.write_signals({"torque": 2.0})
+simulation = create_pendulum(active_controller="python", theta0=0.6)
+adapter = InMemoryAdapter(simulation, controller_id="python")
+adapter.write_signals({"torque": 2.0})
 simulation.start(duration=1.0)
 try:
-    signals = bridge.describe_signals()
-    measures = bridge.read_measurements()
+    while adapter.read_snapshot()["status"] == "running":
+        time.sleep(0.02)
+    print(adapter.read_measurements())
 finally:
     simulation.stop()
 ```
 
-Este fragmento ilustra el acceso por interfaz, no una conexión industrial real.
-Para un ejemplo que deja evolucionar el péndulo y registra medidas:
+The matching controller identities authorize this adapter's writes. The
+command is accepted before the worker starts, then applied at an integration
+boundary. The loop waits for this one-second experiment to finish before
+reading its final measurements. `stop()` also ensures cleanup if the
+experiment is interrupted.
 
-```powershell
-pdm run python examples/pendulum_signal_adapter.py
+The available named signals are:
+
+| Signal | Meaning | Unit | Direction |
+| --- | --- | --- | --- |
+| `theta` | Pendulum angle | rad | output |
+| `omega` | Angular velocity | rad/s | output |
+| `torque` | Applied torque | N m | input, also readable |
+| `time` | Simulated time | s | output |
+| `status` | Execution status | none | output |
+
+`describe_signals()` returns names, units, types, directions and optional
+bounds. `read_measurements()` returns values under these names, while
+`read_snapshot()` includes execution and command metadata. Named writes must
+contain the complete set of input signals: currently `{"torque": value}`.
+The equivalent vector write is `write_inputs([value])`.
+
+For a longer named-signal example with optional browser observation:
+
+```shell
+pdm run python examples/pendulum_signal_adapter.py --port 8766
 ```
 
-Añadir `--port 8766` permite observar ese ejemplo en el navegador. El motor
-selecciona `plc-demo` como controlador; las escrituras HTTP no pueden sustituirla.
-No se está comunicando con un PLC real: el ejemplo prepara el punto donde se
-conectaría su puente OPC UA o Modbus.
+This selects `plc-demo` as its controller identity. The browser can observe
+the experiment, while HTTP input writes are rejected. The example is an
+in-process Python bridge demonstration, not a connection to a physical PLC.
 
-El controlador activo se selecciona al crear el motor, o antes de arrancarlo con
-`configure_controller`. Un controlador distinto no puede enviar órdenes ni tomar
-el control automáticamente. El servicio HTTP se identifica como `http` y no
-permite elegir otra identidad en el cuerpo de una petición. Con
-`active_controller="plc"`, el navegador puede observar y las escrituras HTTP se
-rechazan. Esta selección es arbitraje lógico local, no autenticación de equipos.
+## Select the controller
 
-Los descriptores incluyen nombres, dirección, unidad, tipo y límites opcionales.
-`write_signals` exige el conjunto completo de entradas; actualmente es
-`{"torque": valor}`. En un sistema de varios actuadores el puente deberá preparar
-un vector completo antes de entregarlo, evitando actualizaciones parciales.
-Los registros Modbus y los nodos OPC UA se definirán en sus futuros adaptadores.
+Set `active_controller` when creating the simulation, or call
+`configure_controller(controller_id)` before starting it. Switching the
+controller while the engine is ready clears commands pending from the
+previous controller. Controller selection is fixed during a run.
 
-## Recepción y aplicación
+An adapter's `controller_id` must match that selection. The HTTP adapter
+always identifies as `http`; its request body cannot choose a different
+identity. Thus `active_controller="python"` permits Python adapter writes
+and browser observation, while rejecting HTTP writes. These identifiers
+provide local ownership arbitration, not device authentication.
 
-Una entrada se valida y recibe una secuencia antes de aplicarse. El motor toma
-la última entrada válida al comienzo de un intervalo y la congela durante ese
-intervalo. Si llegan varias antes de esa frontera, se conserva la más reciente;
-no se trata de una cola de órdenes programadas.
+## Distinguish acceptance from application
 
-- `source_timestamp`, si se proporciona, representa una fecha UTC del origen.
-  Se conserva como metadato; no altera el orden local ni programa una entrada
-  para el pasado o el futuro.
-- El tiempo de recepción utiliza un reloj monotónico local independiente de
-  esa fecha. Enviar de nuevo el mismo par cuenta como una recepción válida.
-La última entrada aplicada se mantiene indefinidamente hasta recibir otra
-entrada válida, sin umbrales de antigüedad ni cambios automáticos de valor.
+Each valid command receives a sequence number and local monotonic receipt
+time. The acknowledgement confirms acceptance without waiting for the
+integration worker. The latest pending vector is selected at an interval
+boundary and held constant throughout that interval. A command arriving
+during the interval affects a later interval. Several pending writes may
+coalesce into the most recent command.
 
-Los adaptadores no deben ejecutar lectura de red o esperar al PLC dentro del
-integrador: reciben mensajes aparte y entregan entradas completas al motor.
+Compare an acknowledgement's `accepted_input_seq` with a snapshot's
+`input_seq` to observe application. `pending_input_seq` identifies a pending
+or in-flight command, and `applied_at_sim_time` identifies the applied
+command's simulation-time boundary. `received_input_seq` reports the most
+recently accepted command separately.
 
-## Interfaz HTTP del prototipo
+An optional `source_timestamp` is an ISO 8601 UTC timestamp using `Z` or a
+zero UTC offset. It is diagnostic metadata: it neither schedules a command
+nor changes local sequence order. Local receipt timing uses a monotonic clock.
+Sending the same torque again is a new valid receipt. Invalid commands leave
+the accepted input and receipt metadata unchanged.
 
-- `GET /api/signals`: descriptores de las señales.
-- `GET /api/state`: instantánea con `t`, `x=[theta, omega]`, `u=[torque]`,
-  secuencias de recepción/aplicación, controlador activo, tiempos y estado.
-- `POST /api/input`: cuerpo `{"u": [2.0]}`; admite una fecha UTC de origen
-  opcional. La respuesta confirma recepción. `input_seq` en una instantánea
-  identifica la entrada aplicada y `applied_at_sim_time` su frontera temporal.
+## HTTP endpoints
 
-El ángulo cero es la vertical inferior; theta se expresa en radianes, omega en
-rad/s, tiempo en segundos y par en N·m. El navegador consulta el estado cada
-50 ms aproximadamente; esa frecuencia es independiente de `dt`.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /` | Packaged pendulum viewer |
+| `GET /api/signals` | Signal descriptions |
+| `GET /api/state` | Latest detached snapshot |
+| `POST /api/input` | Submit `{"u": [2.0]}` with optional `source_timestamp` |
 
-## Alcance
+A successful POST returns HTTP 202 and an acceptance acknowledgement. The
+snapshot contains `t`, `x`, `u`, execution `status`, `active_controller`,
+command sequences and timing information. Applied command metadata uses
+`controller_id` and `source_timestamp`; the most recent receipt has separate
+`received_*` fields. The server listens on loopback for local experiments.
 
-El motor intenta avanzar un segundo simulado por segundo real con reloj
-monotónico. SciPy usa pasos internos adaptativos dentro de cada intervalo
-`dt`. No se omiten intervalos si hay retraso, que queda reflejado en `lag`.
-Es ejecución en tiempo real blando: no garantiza plazos estrictos.
+## Timing and current scope
 
-Esta ampliación prepara protocolos y adaptadores, pero no implementa clientes
-ni servidores OPC UA/Modbus ni acredita ensayos con PLC físico. Tampoco añade
-DAE en vivo, integradores CasADi persistentes, pause/reset o escenas 3D.
-Se mantienen HTTP de la biblioteca estándar y Canvas, sin dependencias nuevas.
-FastAPI, WebSocket y SSE pueden evaluarse por separado cuando aporten una
-mejora necesaria. El servicio actual solo escucha en loopback y está destinado
-a experimentos locales.
+The worker aims to advance one simulated second per wall-clock second using
+a monotonic clock. SciPy takes internal solver steps within each fixed `dt`
+interval. If computation falls behind, physical intervals are preserved and
+the snapshot's `lag` increases; this is soft real time, without guaranteed
+deadlines.
 
-El registro JSONL actual escribe en disco desde el worker. Un disco lento puede
-añadir retraso; para cadencias más exigentes habría que medirlo y evaluar un
-escritor independiente con memoria acotada. Los adaptadores de comunicaciones
-no realizan operaciones de red dentro del worker físico.
+Communication adapters perform their network work outside the physics worker.
+JSONL recording currently writes from that worker, so slow storage can add
+lag. This configuration provides the pendulum ODE, a local HTTP interface and a
+two-dimensional Canvas scene. The [generic engine](simulation.md) also accepts
+other ODE models and index-1 DAEs through an explicitly selected stepper.
+Industrial bridges, higher-index DAE initialization, persistent CasADi
+integration, pause/reset and 3D scenes are not implemented.

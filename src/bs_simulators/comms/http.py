@@ -16,18 +16,23 @@ from .adapters import InMemoryAdapter
 from ..runtime.protocols import SimulationPort
 
 
-def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765):
+def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765, viewer=None):
     """Return an unstarted local HTTP server bound to ``simulation``.
 
     GET /api/state returns a copied snapshot. GET /api/signals returns signal
     metadata. POST /api/input accepts ``{"u": [torque]}`` with optional
     UTC ``source_timestamp``. The fixed HTTP controller identity
     is ``http``; it can write only when that controller is explicitly selected.
+    The optional viewer is selected explicitly or from snapshot metadata.
+    Without a configured scene, API routes remain available and GET / is 404.
     Requests acknowledge acceptance, not application.
     The next committed snapshot's input_seq identifies an applied command.
     """
     if host not in ('127.0.0.1', 'localhost'):
         raise ValueError('the demo server must bind to loopback')
+    selected_viewer = viewer if viewer is not None else simulation.snapshot().get('viewer')
+    if selected_viewer not in (None, 'pendulum'):
+        raise ValueError('unknown packaged viewer')
     adapter = InMemoryAdapter(simulation, controller_id='http')
 
     class Handler(BaseHTTPRequestHandler):
@@ -91,6 +96,9 @@ def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765):
             elif path == '/api/signals':
                 self._send(200, adapter.describe_signals())
             elif path in ('/', '/viewer.html'):
+                if selected_viewer is None:
+                    self._send(404, {'error': 'no viewer is configured for this simulation'})
+                    return
                 try:
                     payload = files('bs_simulators.viewers').joinpath('pendulum.html').read_bytes()
                 except FileNotFoundError:

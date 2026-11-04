@@ -1,7 +1,9 @@
 """Structural Python protocols used by simulation transport adapters."""
 
 from collections.abc import Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
+
+import numpy as np
 
 
 @runtime_checkable
@@ -116,5 +118,54 @@ class SimulationPort(Protocol):
         vectors and is held constant over an integration interval. If no new
         command arrives, the last applied input remains active indefinitely. Rejected
         commands must leave the accepted input and receipt metadata unchanged.
+        """
+        ...
+
+
+@runtime_checkable
+class Stepper(Protocol):
+    """Structural interface for one simulation's numerical integration.
+
+    A Simulation owns a fresh stepper exclusively. Only its physics worker
+    calls ``step``. Initialization and stepping must commit time, state, and
+    derivatives atomically: failed operations leave the last committed result
+    unchanged. Properties return detached state vectors.
+    """
+
+    @property
+    def t(self) -> float:
+        """Absolute time of the last committed integration result."""
+        ...
+
+    @property
+    def x(self) -> np.ndarray:
+        """Detached state vector at ``t``; unavailable before initialization."""
+        ...
+
+    @property
+    def xdot(self) -> np.ndarray | None:
+        """Detached DAE derivative vector at ``t``, or None for an ODE stepper."""
+        ...
+
+    def initialize(self, model: Callable, x0: Sequence[float], *,
+                   t0: float = 0.0, u0: Sequence[float]) -> None:
+        """Bind a model and initial vectors without advancing simulated time.
+
+        The normalized model is called as ``model(t, x, u)`` by an ODE
+        stepper or ``model(t, x, xdot, u)`` by a DAE stepper. Input is always
+        a complete vector here; Simulation adapts model keyword arguments.
+        DAE implementations may make algebraic values consistent while
+        preserving the configured fixed states. Reinitializing a bound
+        stepper must raise RuntimeError rather than sharing its state.
+        """
+        ...
+
+    def step(self, dt: float, u: Sequence[float]) -> np.ndarray:
+        """Advance one positive interval with a frozen input vector.
+
+        Return a detached state at ``t + dt``. Use absolute model time and
+        leave committed state unchanged on validation or solver failure.
+        Simulation calls this method internally; it is not a separate
+        public execution mode.
         """
         ...

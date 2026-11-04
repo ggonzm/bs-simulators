@@ -10,7 +10,7 @@ import json
 import threading
 import time
 
-from bs_simulators import InMemoryAdapter, PendulumSimulation
+from bs_simulators import InMemoryAdapter, create_pendulum
 from bs_simulators.comms.http import create_server
 
 
@@ -22,7 +22,7 @@ def main():
     args = parser.parse_args()
     if not 5 <= args.duration < float('inf'):
         parser.error('duration must be finite and at least 5 simulated seconds')
-    simulation = PendulumSimulation(active_controller='plc-demo', dt=0.01)
+    simulation = create_pendulum(active_controller='plc-demo', dt=0.01)
     bridge = InMemoryAdapter(simulation, controller_id='plc-demo')
     server = create_server(simulation, port=args.port) if args.port is not None else None
     server_thread = None

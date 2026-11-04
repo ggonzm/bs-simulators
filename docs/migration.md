@@ -1,81 +1,86 @@
-# Extracción desde benchmark-systems
+# Package architecture
 
-El prototipo se desarrolló sin commits en la rama `develop` de
-`benchmark-systems`. Esta extracción crea el paquete complementario
-`bs-simulators`, importable como `bs_simulators`, con versión inicial `0.1.0`.
-La versión de la librería original permanece en `1.0.7`.
+`bs-simulators` adds live execution and observation to numerical models from
+`benchmark-systems`. The model library remains independently usable for
+offline numerical simulation, symbolic analysis and Matplotlib animation.
+The packages have independent versions; `bs-simulators` 0.1.0 requires
+`benchmark-systems>=1.1.2,<2` from PyPI.
 
-## Responsabilidades
+## Responsibilities
 
-| Ubicación anterior | Ubicación nueva |
+| Component | Responsibility |
 | --- | --- |
-| `benchmark_systems/simulation/core.py` | `bs_simulators/runtime/core.py` |
-| `simulation/protocols.py`, `signals.py` | `runtime/protocols.py`, `runtime/signals.py` |
-| `simulation/adapters.py` | `comms/adapters.py` |
-| `simulation/server.py` | `comms/http.py` |
-| `simulation/viewer.html` | `viewers/pendulum.html` |
-| `python -m benchmark_systems.simulation` | `python -m bs_simulators` |
-| Ejemplos y pruebas de simulación en vivo | `examples/` y `tests/` de este repositorio |
+| `runtime.core` | Generic Simulation, clock, input retention and controller ownership |
+| `runtime.steppers` | Configurable ODE/DAE integration and atomic interval commits |
+| `runtime.signals` | Signal descriptions and controller/timestamp validation |
+| `runtime.protocols` | Structural `SimulationPort` and `Stepper` interfaces |
+| `presets` | Small configurations such as create_pendulum, returning Simulation |
+| `comms.adapters` | In-memory reads and complete-vector or named-signal writes |
+| `comms.http` | Local HTTP endpoints and browser-resource serving |
+| `viewers` | Packaged Canvas viewer resources |
+| `benchmark_systems.models` | Numerical plant equations |
+| `benchmark_systems.animations` | Offline replay helpers |
 
-El motor utiliza `benchmark_systems.models.pendulum` como dependencia externa.
-Los modelos numéricos/simbólicos, integradores anteriores y animadores offline
-no se trasladan. El replay sigue usando `benchmark_systems.animations`.
+The runtime imports numerical models without importing communications or
+browser components. Public package exports are loaded on demand. The HTTP
+server loads its HTML through `importlib.resources`, so the viewer is available
+from an installed wheel as well as a source checkout.
+
+## Data flow
 
 ```mermaid
 flowchart LR
-    HTTP[comms.http] --> Adapter[comms.InMemoryAdapter]
-    Adapter --> Port[runtime.SimulationPort]
-    Engine[runtime.PendulumSimulation] -. satisface .-> Port
-    Engine --> Model[benchmark_systems.models.pendulum]
-    HTTP --> Assets[viewers/pendulum.html]
-    Engine --> Record[Registro JSONL]
-    Record --> Replay[benchmark_systems.animations]
+    Browser[Browser Canvas viewer] --> HTTP[Local HTTP service]
+    HTTP --> Adapter[InMemoryAdapter]
+    Python[Python controller or bridge] --> Adapter
+    Adapter --> Port[SimulationPort]
+    Engine[Simulation] -. implements .-> Port
+    Engine --> Stepper[Stepper protocol]
+    ODE[ODEStepper] -. implements .-> Stepper
+    DAE[DAEStepper] -. implements .-> Stepper
+    Stepper --> Model[benchmark-systems numerical callable]
+    Engine --> Recording[JSONL recording]
+    Recording --> Replay[Matplotlib replay]
 ```
 
-`runtime` no importa comunicaciones ni recursos web. Las exportaciones de nivel
-superior se cargan de forma diferida para conservar esa separación. HTTP recibe
-un motor que satisfaga `SimulationPort` y carga el visor con
-`importlib.resources`, también desde un wheel instalado.
+`SimulationPort` is a `typing.Protocol`: engines satisfy it by providing its
+methods rather than inheriting a base class. It exposes signal descriptions,
+named measurements, snapshots and complete input submission. Reading a
+measurement does not advance the plant. The adapter delegates named
+measurements to the engine instead of interpreting pendulum state indices.
 
-## Qué se conserva
+## Ownership and execution
 
-Física, entrada congelada por intervalo, retención del último valor válido,
-selección explícita del controlador, validación de fechas e instantes de recepción
-monotónicos y registro terminal. No se añaden OPC UA/Modbus reales, FastAPI ni
-WebSocket durante la extracción.
+The simulation worker owns integration and committed state. A controller
+submits a complete vector through its fixed `controller_id`; the engine
+accepts it only when it matches the explicitly selected `active_controller`.
+Selection happens before a run and is not changed automatically.
 
-Se mantiene una copia de seguridad del prototipo de origen antes de retirar sus
-archivos. `AGENTS.md` y `.vscode/` del repositorio original no forman parte de la
-extracción. Su README enlaza al nuevo proyecto.
+Input updates are validated and queued atomically. The latest pending command
+is frozen for one integration interval, and the last applied value remains
+active until another valid command is applied. Acceptance and application
+have separate sequence and timing fields. An optional UTC timestamp records
+the sender's timestamp without replacing the local monotonic receipt clock.
 
-## Corrección detectada durante la migración
+Network reads and writes belong to adapters outside the physics worker.
+Future industrial bridges can map transport addresses to the existing named
+signals and input operations. OPC UA and Modbus adapters are not currently
+implemented.
 
-En Windows, rechazar un POST antes de leer su cuerpo podía cerrar el socket con
-datos pendientes: el cliente recibía un reset intermitente en lugar del error
-HTTP esperado. El servidor del paquete extraído drena de forma acotada el cuerpo
-pendiente antes de responder con error. La espera tiene límite y no afecta al
-hilo físico. No se han relajado las pruebas de rechazo.
+## Technology and extension points
 
-## Instalación conjunta
+The current CLI uses `argparse`; HTTP uses Python's standard library; the
+browser scene uses Canvas.
 
-Las dependencias de ejecución declaran `benchmark-systems>=1.0.7,<2`. Como
-esa versión no está en PyPI, PDM fija su resolución de desarrollo al commit
-Git existente `0334ffd8179fa5355236d0aeb00aef42b3280517`, sin cambiar los
-requisitos públicos del wheel. No se usa una dependencia editable del núcleo.
-El intento inicial de resolver un grupo editable local falló al buscar primero
-el requisito por nombre en PyPI; no se ha dejado ese grupo incompleto.
-Las distribuciones de ambos paquetes se verifican por separado antes de la
-limpieza del origen. Las versiones de cada paquete pueden evolucionar de forma
-independiente, conservando un rango de compatibilidad probado.
+A new plant can provide the same structural interface while exposing its own
+signals and measurements. A new viewer can consume snapshots without owning
+the simulation clock. These extension points do not imply that additional
+browser scenes for every model, higher-index DAE initialization, or industrial
+transports are already part of this release. See the [pendulum guide](pendulum.md) for the implemented
+experiment and its supported operations.
 
-## Resultado final
+See [Configure a simulation](simulation.md) for model arguments, signal mapping
+and DAE consistency configuration.
 
-El repositorio nuevo usa una `.venv` propia y un lockfile generado por PDM.
-Las 45 pruebas del simulador pasan en ese entorno; las 40 pruebas originales
-del núcleo pasan después de retirar de él el prototipo. Ambos repositorios
-siguen en `develop`, sin commits ni publicaciones durante esta extracción.
-
-Se encontraron dos limitaciones locales de permisos: la carpeta temporal
-predeterminada de pytest y la limpieza de directorios de build de solo lectura.
-Las pruebas finales usaron una carpeta temporal nueva y la construcción final
-usa la opción oficial `-C no-clean-build=true`; no se editan generados a mano.
+Omitting `stepper` creates a fresh RK45 ODE integrator for each simulation.
+DAE models require an explicit DAEStepper configuration.

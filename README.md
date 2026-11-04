@@ -1,127 +1,123 @@
 # bs-simulators
 
-Simulación en vivo, comunicaciones y visualización para los modelos de
-[`benchmark-systems`](https://github.com/ggonzm/benchmark-systems).
+Live simulation, controller adapters and browser visualization for
+[`benchmark-systems`](https://github.com/ggonzm/benchmark-systems) models.
 
-Este paquete complementario mantiene separada la ejecución en vivo de la
-librería original. Los modelos numéricos, simbólicos y las animaciones offline
-siguen perteneciendo a `benchmark-systems`.
+Version **0.1.0** provides a model-independent `Simulation` with RK45 ODE
+integration by default and configurable ODE/index-1 DAE steppers, a local HTTP interface, a pendulum Canvas viewer and
+JSONL recording. It requires Python 3.13 or later and
+`benchmark-systems>=1.1.2,<2`, installed from PyPI. Numerical and symbolic
+models, along with offline Matplotlib animations, remain available through
+`benchmark-systems`.
 
-Estado: prototipo de péndulo ODE, versión `0.1.0`, Python 3.13 o posterior.
-HTTP y Canvas están implementados; OPC UA y Modbus son extensiones futuras.
+## Install from a source checkout
 
-## Desarrollo local
+Run these commands from the repository root with PDM available:
 
-Colocar ambos repositorios como carpetas hermanas:
-
-```text
-GitLab Projects/
-├── benchmark-systems/
-└── bs-simulators/
-```
-
-Desde `bs-simulators`, preparar su propio entorno con PDM:
-
-```powershell
-# Primera preparación, o después de modificar dependencias:
-pdm lock -G dev -G replay
+```shell
 pdm sync -G dev
-pdm run pytest
 ```
 
-La dependencia publicada se declara como `benchmark-systems>=1.0.7,<2`.
-Como el núcleo todavía no está disponible en PyPI, la resolución de desarrollo
-de PDM utiliza su commit `0334ffd8179fa5355236d0aeb00aef42b3280517` (versión
-1.0.7) en GitHub. Esa configuración no introduce rutas locales ni una URL Git
-en los requisitos públicos del wheel. El lockfile fija el commit y las demás
-dependencias. Cuando el núcleo se publique en un índice apropiado, se podrá
-retirar este override y regenerar el lockfile.
+This prepares the project's environment from its lockfile, including test and
+notebook tooling. PDM resolves the model library and other package dependencies
+from PyPI.
 
-El simulador utiliza esa versión instalada, no una copia editable del checkout
-hermano. Los cambios locales del núcleo no se incorporan automáticamente.
-Todavía no se presupone que `bs-simulators` esté publicado en un índice.
+## Run the pendulum
 
-## Probar el péndulo
+In the first terminal:
 
-```powershell
-# Terminal 1
+```shell
 pdm run python -m bs_simulators --port 8765 --dt 0.01
+```
 
-# Terminal 2
+Open [the local viewer](http://127.0.0.1:8765/). The simulator runs independently
+of the browser and retains the last valid torque until another command arrives.
+Press Ctrl+C in the simulator terminal to stop it. The installed
+`bs-simulators` command provides the same CLI.
+
+In a second terminal:
+
+```shell
 pdm run python examples/pendulum_sil_controller.py
 ```
 
-Abrir <http://127.0.0.1:8765>. También se puede arrancar con el comando instalado
-`pdm run bs-simulators --port 8765`. El motor conserva el último par válido si
-el controlador deja de enviar órdenes. El visor puede cerrarse sin detenerlo.
+This example sends torque commands from a separate process and waits until
+they are applied. When the controller exits, the simulator continues with the
+last applied value.
 
-Para usar señales por nombre sin escrituras HTTP:
+## Use named signals
 
-```powershell
+```shell
 pdm run python examples/pendulum_signal_adapter.py --port 8766
 ```
 
-Ese ejemplo selecciona el controlador `plc-demo`, pero no conecta un PLC físico.
+This example writes the `torque` signal and reads measurements through
+`InMemoryAdapter`. It selects `plc-demo` as the active controller and optionally
+opens a read-only browser view. It demonstrates the Python interface without
+connecting a physical PLC or implementing an industrial communication protocol.
 
-## Core notebook example
+The [simulation guide](docs/simulation.md) explains model configuration, ODE/DAE
+steppers and named signals. The [pendulum guide](docs/pendulum.md) explains controller selection, signals,
+timestamps and HTTP requests.
+
+## Use the interactive example
 
 Open [`examples/pendulum_core.ipynb`](examples/pendulum_core.ipynb) with the
-project's Python environment. It starts the pendulum thread, runs a minimal
-PD scan loop, and exposes signal descriptions, measurements, and snapshots
-for interactive inspection.
+project's Python environment. It demonstrates a pendulum controller scan loop
+and exposes signal descriptions, measurements and snapshots for inspection.
+Its cells define the experiment's initial condition, reference and feedback
+settings; browser observation is optional.
 
-## Registrar y reproducir
+## Record and replay
 
-```powershell
+```shell
 pdm run python -m bs_simulators --duration 15 --record pendulum-run.jsonl
+```
 
-# Dependencias opcionales para exportar un GIF con Matplotlib:
+The simulator records the initial state, each integration interval and a
+terminal snapshot. It stops after 15 simulated seconds and closes its HTTP
+service. An existing recording file is preserved rather than overwritten.
+
+For Matplotlib replay and GIF export:
+
+```shell
 pdm sync -G dev -G replay
 pdm run python examples/pendulum_sil_replay.py pendulum-run.jsonl --output pendulum.gif
 ```
 
-Se conservan dos flujos: simulación offline con los modelos y animaciones
-originales, y simulación en vivo con este paquete. La integración por intervalos
-es interna y no se presenta como un tercer modo público.
+The `replay` extra supplies the original animation helpers and Pillow. The
+replay example reads the completed recording and exports a GIF; it does not
+restart the live simulator.
 
-## Organización
+## Package structure
 
 ```text
 src/bs_simulators/
-├── runtime/       motor, señales y protocolos de Python
-├── comms/         adaptador en memoria y HTTP
-└── viewers/       recursos del visor del péndulo
+├── runtime/    simulation clock, integration, controller selection and signals
+├── comms/      in-memory adapter and local HTTP transport
+└── viewers/    packaged browser resources
 ```
 
-`SimulationPort` es un `typing.Protocol`. Los adaptadores leen medidas y
-entregan entradas completas sin depender de un modelo concreto. El motor
-selecciona explícitamente el controlador activo y distingue recepción y
-aplicación, fecha UTC del origen e instante local monotónico de recepción.
-Consultar la [guía del péndulo](docs/pendulum.md) y la
-[arquitectura y extracción](docs/migration.md).
+`SimulationPort` is a structural Python protocol used by the adapters. The
+runtime reads numerical models from `benchmark-systems` and runs without
+importing the HTTP or browser components. See the
+[architecture guide](docs/migration.md) for the data flow.
 
-## Verificación y distribución
+## Validation and scope
 
-```powershell
+```shell
 pdm run pytest
 pdm build
 ```
 
-En este checkout de Windows/OneDrive, si la limpieza de `.pdm-build` encuentra
-un directorio de solo lectura, puede usarse la opción oficial del backend
-`pdm build -C no-clean-build=true`, sin eliminar ni editar los generados a mano.
+The test suite checks integration, input retention, controller ownership,
+communication behavior and packaged resources. PDM builds the wheel and source
+distribution, including the HTML viewer.
 
-El HTML del visor forma parte de las distribuciones y se carga con
-`importlib.resources`; no necesita el checkout para funcionar. El ejemplo de
-replay usa el módulo `benchmark_systems.animations` del paquete original.
-
-Las nuevas propuestas se desarrollan en `develop`. La fusión con `main` y el
-push se realizan cuando el usuario lo indique; antes se incrementa el tercer
-número de versión en `pyproject.toml` y `src/bs_simulators/__init__.py`.
-
-El servicio HTTP es local. La ejecución ofrece tiempo real blando y no
-garantiza plazos estrictos. El prototipo no incluye DAE en vivo, comunicación
-industrial real, pause/reset ni escenas 3D.
-
-Licencia MIT. Se conserva además `LICENSE.benchmark-systems` con los avisos de
-la librería de origen.
+The simulator provides soft real time: scheduling or computation can introduce
+lag, and strict timing deadlines are not guaranteed. The current implementation
+uses Python's standard-library HTTP server, an argparse CLI and browser Canvas.
+Higher-index DAEs, OPC UA/Modbus bridges, pause/reset controls and 3D scenes
+are outside the current prototype.
+MIT licensed. `LICENSE.benchmark-systems` preserves the original library's
+license notices.

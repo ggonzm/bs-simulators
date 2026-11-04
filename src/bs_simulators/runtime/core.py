@@ -7,86 +7,14 @@ import copy
 import threading
 import time
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
-from scipy.integrate import solve_ivp
-
-from benchmark_systems.models import pendulum
-from .signals import PENDULUM_SIGNALS, validate_source_timestamp, controller_identifier
-
-
-def _finite(name, value, *, positive=False, nonnegative=False):
-    if isinstance(value, (bool, str, bytes)):
-        raise ValueError(f"{name} must be a finite number")
-    try:
-        value = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be a finite number") from exc
-    if not np.isfinite(value):
-        raise ValueError(f"{name} must be finite")
-    if positive and value <= 0:
-        raise ValueError(f"{name} must be positive")
-    if nonnegative and value < 0:
-        raise ValueError(f"{name} must be nonnegative")
-    return value
-
-
-def _vector(name, values, size=None):
-    try:
-        raw = np.asarray(values)
-        if raw.dtype.kind not in 'iuf':
-            raise ValueError
-        result = np.asarray(values, dtype=float)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be a finite numeric vector") from exc
-    if result.ndim != 1 or result.size == 0 or not np.isfinite(result).all():
-        raise ValueError(f"{name} must be a non-empty finite vector")
-    if size is not None and result.size != size:
-        raise ValueError(f"{name} must contain {size} values")
-    return result.copy()
-
-
-class _ODEStepper:
-    """Advance ``f(t, x, u)`` with absolute time and a frozen input per step.
-
-    This object has one owner and is not thread-safe. ``step`` commits its
-    state only after successful integration. A fresh solve_ivp call at each
-    input boundary avoids reusing multistep history across discontinuities.
-    """
-
-    def __init__(self, f, y0, *, t0=0.0, input_size=1, rtol=1e-7, atol=1e-9):
-        if not callable(f):
-            raise ValueError("f must be callable")
-        if isinstance(input_size, bool) or not isinstance(input_size, int) or input_size < 1:
-            raise ValueError("input_size must be a positive integer")
-        self.f = f
-        self.t = _finite("t0", t0)
-        self.x = _vector("y0", y0)
-        self.input_size = input_size
-        self.rtol = _finite("rtol", rtol, positive=True)
-        self.atol = _finite("atol", atol, positive=True)
-
-    def step(self, dt, u):
-        """Return a copy of the new state, holding ``u`` over this interval."""
-        dt = _finite("dt", dt, positive=True)
-        held = _vector("u", u, self.input_size)
-        held.flags.writeable = False
-        target = self.t + dt
-        if not np.isfinite(target) or target <= self.t:
-            raise ValueError("dt must advance finite simulation time")
-
-        def rhs(t, x):
-            return _vector("derivative", self.f(t, x, held), self.x.size)
-
-        result = solve_ivp(rhs, (self.t, target), self.x.copy(), t_eval=[target],
-                           rtol=self.rtol, atol=self.atol)
-        if not result.success:
-            raise RuntimeError(result.message)
-        new_state = _vector("integrated state", result.y[:, -1], self.x.size)
-        self.x = new_state
-        self.t = target
-        return self.x.copy()
+from ._validation import _finite, _vector
+from .protocols import Stepper
+from .steppers import ODEStepper
+from .signals import SignalDescriptor, validate_source_timestamp, controller_identifier
 
 
 @dataclass(frozen=True)
@@ -98,8 +26,8 @@ class _InputCommand:
     source_timestamp: str | None
 
 
-class PendulumSimulation:
-    """Single-worker, fixed-step pendulum simulator with latest-value ZOH.
+class Simulation:
+    """Single-worker, model-independent simulator with latest-value ZOH.
 
     Commands are accepted atomically and applied at the next step boundary.
     An acknowledgement indicates acceptance, not physical application. The
@@ -108,19 +36,81 @@ class PendulumSimulation:
     preserving every physical step. Completed runs cannot be restarted.
     """
 
-    def __init__(self, *, m=1.0, L=1.0, drag=0.1, theta0=0.6,
-                 omega0=0.0, dt=0.01, u0=0.0, active_controller='http'):
-        self.parameters = {
-            'm': _finite('m', m, positive=True),
-            'L': _finite('L', L, positive=True),
-            'drag': _finite('drag', drag, nonnegative=True),
-        }
+    def __init__(self, model, *, stepper: Stepper | None = None, x0, u0, parameters=None,
+                 dt=0.01, t0=0.0, state_signals=None, input_signals=None,
+                 active_controller='python', viewer=None, input_map=None):
+        """Configure a numerical model and an optional integrator.
+
+        Parameters
+        ----------
+        model : callable
+            A benchmark-systems function or compatible numerical callable.
+            ODEs receive ``(t, x, **parameters, u=...)``; DAEs also receive
+            the derivative as their third positional argument. The chosen
+            stepper determines which signature is used.
+        stepper : Stepper or None, optional
+            Integrator configuration owned exclusively by this run. If omitted
+            or None, create a fresh ODEStepper(method='RK45'). Pass DAEStepper
+            explicitly for residual models, or another Stepper implementation
+            to customize integration.
+        x0, u0 : sequence of float
+            Initial state and complete held input vector. An empty input
+            vector denotes an autonomous model, called without ``u``.
+        parameters : mapping, optional
+            Detached, JSON-compatible model keyword arguments. NumPy arrays
+            and scalars are converted to lists and Python scalar values.
+        dt : float, optional
+            Positive integration interval in simulated seconds.
+        t0 : float, optional
+            Initial absolute model time. Duration and pacing are relative to it.
+        state_signals, input_signals : sequence of SignalDescriptor, optional
+            Ordered descriptions mapped to state and input vector positions.
+            Defaults are ``x0``, ``x1``, ... and ``u0``, ``u1``, ... .
+        active_controller : str, optional
+            Controller authorized to submit inputs; defaults to ``'python'``.
+        viewer : str or None, optional
+            Optional packaged-viewer identifier for communication adapters.
+        input_map : callable, optional
+            Map the complete input vector to model keyword arguments. By
+            default, one input becomes scalar ``u`` and several become vector
+            ``u``. Use a mapping for different names or a one-element vector.
+
+        Notes
+        -----
+        Construction initializes the stepper but does not start a thread.
+        A DAE stepper may adjust algebraic initial values for consistency.
+        Models with scalar/vector input conventions that differ from the
+        defaults should supply ``input_map`` explicitly.
+        """
+        if not callable(model):
+            raise ValueError('model must be callable')
+        if stepper is None:
+            stepper = ODEStepper(method='RK45')
+        if not isinstance(stepper, Stepper):
+            raise TypeError('stepper must implement the Stepper protocol')
+        if input_map is not None and not callable(input_map):
+            raise ValueError('input_map must be callable or None')
+        if viewer is not None and (not isinstance(viewer, str) or not viewer):
+            raise ValueError('viewer must be a non-empty identifier or None')
         self.dt = _finite('dt', dt, positive=True)
+        self._t0 = _finite('t0', t0)
+        initial = _vector('x0', x0)
+        held = _vector('u0', u0, allow_empty=True)
+        self._input_size = held.size
         self._active_controller = controller_identifier(active_controller)
-        initial = [_finite('theta0', theta0), _finite('omega0', omega0)]
-        self._u = [_finite('u0', u0)]
-        self._stepper = _ODEStepper(
-            lambda t, x, u: pendulum(t, x, **self.parameters, u=u[0]), initial)
+        self._parameters = self._copy_parameters(parameters)
+        self._state_signals = self._descriptors(state_signals, initial.size, 'x', 'output')
+        self._input_signals = self._descriptors(input_signals, held.size, 'u', 'input')
+        names = [signal.name for signal in (*self._state_signals, *self._input_signals)]
+        if len(set(names)) != len(names):
+            raise ValueError('signal names must be unique across states and inputs')
+        self._viewer = viewer
+        self._model_name = getattr(model, '__name__', type(model).__name__)
+        self._model = model
+        self._input_map = input_map
+        self._u = self._checked_input(held).tolist()
+        self._stepper = stepper
+        stepper.initialize(self._evaluate, initial, t0=self._t0, u0=held)
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread = None
@@ -130,12 +120,85 @@ class PendulumSimulation:
         self._applied_command = None
         self._command_seq = 0
         self._input_seq = 0
-        self._applied_at = 0.0
+        self._applied_at = self._t0
         self._seq = 0
         self._status = 'ready'
         self._error = None
         self._started = None
         self._snapshot = self._build_snapshot(0.0)
+
+    @staticmethod
+    def _copy_parameters(parameters):
+        if parameters is None:
+            return {}
+        if not isinstance(parameters, Mapping) or any(not isinstance(key, str) for key in parameters):
+            raise ValueError('parameters must be a mapping with string keys')
+
+        def convert(value):
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, np.generic):
+                return value.item()
+            raise TypeError('parameters must contain JSON-compatible values')
+
+        try:
+            return json.loads(json.dumps(dict(parameters), default=convert, allow_nan=False))
+        except (TypeError, ValueError) as exc:
+            raise ValueError('parameters must contain finite JSON-compatible values') from exc
+
+    @staticmethod
+    def _descriptors(descriptors, count, prefix, direction):
+        if descriptors is None:
+            return tuple(SignalDescriptor(f'{prefix}{index}', '', 'float64', direction)
+                         for index in range(count))
+        descriptors = tuple(descriptors)
+        if len(descriptors) != count:
+            raise ValueError(f'{direction} signal count must match its vector dimension')
+        result = []
+        for descriptor in descriptors:
+            if not isinstance(descriptor, SignalDescriptor):
+                raise TypeError('signals must be SignalDescriptor instances')
+            if (not isinstance(descriptor.name, str) or not descriptor.name.strip()
+                    or descriptor.name in ('time', 'status')):
+                raise ValueError('signal names must be non-empty and cannot be time or status')
+            if descriptor.direction != direction:
+                raise ValueError(f'signal direction must be {direction!r}')
+            if not isinstance(descriptor.unit, str) or not isinstance(descriptor.dtype, str):
+                raise ValueError('signal unit and dtype must be strings')
+            lower = None if descriptor.lower is None else _finite('lower', descriptor.lower)
+            upper = None if descriptor.upper is None else _finite('upper', descriptor.upper)
+            if lower is not None and upper is not None and lower > upper:
+                raise ValueError('signal lower bound must not exceed its upper bound')
+            result.append(SignalDescriptor(descriptor.name, descriptor.unit, descriptor.dtype,
+                                           direction, lower, upper))
+        return tuple(result)
+
+    @property
+    def parameters(self):
+        """Return detached model parameters for interactive inspection."""
+        return copy.deepcopy(self._parameters)
+
+    def _checked_input(self, u):
+        values = _vector('u', u, self._input_size, allow_empty=True)
+        for value, signal in zip(values, self._input_signals):
+            if ((signal.lower is not None and value < signal.lower)
+                    or (signal.upper is not None and value > signal.upper)):
+                raise ValueError(f'input {signal.name!r} is outside its configured bounds')
+        return values
+
+    def _evaluate(self, t, x, *arguments):
+        *derivative, u = arguments
+        if self._input_map is not None:
+            inputs = self._input_map(u.copy())
+            if not isinstance(inputs, Mapping) or any(not isinstance(key, str) for key in inputs):
+                raise ValueError('input_map must return keyword arguments as a mapping')
+        elif self._input_size == 0:
+            inputs = {}
+        else:
+            inputs = {'u': float(u[0]) if self._input_size == 1 else u}
+        if self._parameters.keys() & inputs.keys():
+            raise ValueError('model parameters must not duplicate mapped input names')
+        return self._model(t, x, *derivative, **self._parameters, **inputs)
 
     def _build_snapshot(self, elapsed):
         state = {
@@ -143,9 +206,12 @@ class PendulumSimulation:
             'u': list(self._u), 'seq': self._seq, 'input_seq': self._input_seq,
             'pending_input_seq': self._pending_sequence(),
             'applied_at_sim_time': self._applied_at,
-            'wall_elapsed': elapsed, 'lag': max(0.0, elapsed - self._stepper.t),
-            'status': self._status, 'parameters': dict(self.parameters),
+            'wall_elapsed': elapsed, 'lag': max(0.0, elapsed - (self._stepper.t - self._t0)),
+            'status': self._status, 'parameters': self.parameters,
+            'model': self._model_name, 'viewer': self._viewer,
         }
+        if self._stepper.xdot is not None:
+            state['xdot'] = self._stepper.xdot.tolist()
         if self._error is not None:
             state['error'] = self._error
         state.update(self._input_metadata())
@@ -178,13 +244,17 @@ class PendulumSimulation:
 
     def describe_signals(self):
         """Return detached metadata; direction is relative to the simulator."""
-        return [signal.as_dict() for signal in PENDULUM_SIGNALS]
+        return [signal.as_dict() for signal in (*self._state_signals, *self._input_signals,
+                SignalDescriptor('time', 's', 'float64', 'output'),
+                SignalDescriptor('status', '', 'string', 'output'))]
 
     def read_measurements(self):
         """Map this model's committed state to its named measurements."""
         state = self.snapshot()
-        return {'theta': state['x'][0], 'omega': state['x'][1],
-                'torque': state['u'][0], 'time': state['t'], 'status': state['status']}
+        values = {signal.name: value for signal, value in zip(self._state_signals, state['x'])}
+        values.update({signal.name: value for signal, value in zip(self._input_signals, state['u'])})
+        values.update(time=state['t'], status=state['status'])
+        return values
 
     @property
     def active_controller(self):
@@ -221,7 +291,7 @@ class PendulumSimulation:
         source timestamp is diagnostic metadata and never schedules commands.
         Repeated values are fresh receipts; rejected commands change nothing.
         """
-        values = _vector('u', u, 1).tolist()
+        values = self._checked_input(u).tolist()
         controller_id = controller_identifier(controller_id)
         source_timestamp = validate_source_timestamp(source_timestamp)
         with self._lock:
@@ -261,7 +331,7 @@ class PendulumSimulation:
             self._status = 'running'
             self._snapshot = self._build_snapshot(0.0)
             self._thread = threading.Thread(target=self._run, args=(steps, stream),
-                                            name='pendulum-simulation', daemon=False)
+                                            name='simulation', daemon=False)
             self._thread.start()
         return self
 
@@ -321,6 +391,22 @@ class PendulumSimulation:
                         self._status = 'error'
                         self._error = f'{type(exc).__name__}: {exc}'
                         self._snapshot = self._build_snapshot(time.monotonic() - self._started)
+
+    def wait(self, timeout=None):
+        """Wait for completion and return whether this run has stopped.
+
+        ``timeout`` is an optional nonnegative number of wall-clock seconds.
+        This method does not advance the model or request a stop.
+        """
+        if timeout is not None:
+            timeout = _finite('timeout', timeout, nonnegative=True)
+        thread = self._thread
+        if thread is None:
+            return self._status != 'ready'
+        if thread is threading.current_thread():
+            raise RuntimeError('the simulation worker cannot wait for itself')
+        thread.join(timeout)
+        return not thread.is_alive()
 
     def stop(self):
         """Request shutdown and wait for the in-flight integration to complete."""

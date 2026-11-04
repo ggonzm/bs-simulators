@@ -3,7 +3,7 @@
 import argparse
 import threading
 
-from .runtime import PendulumSimulation
+from .presets import create_pendulum
 from .comms.http import create_server
 
 
@@ -25,7 +25,7 @@ def main(argv=None):
     if not 0 <= args.port <= 65535:
         parser.error('port must be between 0 and 65535')
     try:
-        simulation = PendulumSimulation(m=args.m, L=args.length, drag=args.drag,
+        simulation = create_pendulum(m=args.m, L=args.length, drag=args.drag,
                                         theta0=args.theta0, omega0=args.omega0,
                                         dt=args.dt, u0=args.u0, active_controller=args.active_controller)
         server = create_server(simulation, port=args.port)
@@ -42,8 +42,8 @@ def main(argv=None):
     print(f'Pendulum viewer: http://127.0.0.1:{server.server_address[1]}/', flush=True)
     try:
         # A bounded wait also permits Ctrl+C on Windows without busy spinning.
-        while simulation.snapshot()['status'] == 'running':
-            simulation._stop_event.wait(0.1)
+        while not simulation.wait(0.1):
+            pass
     except KeyboardInterrupt:
         pass
     finally:

@@ -5,7 +5,7 @@
 groups = ["default", "dev", "replay"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:8969e6a01a5f48866944b31f980e1517e8576944fbff3db703a0022b3cb87abb"
+content_hash = "sha256:4963e97c8fdfff03484238fdb9b862b6109f4fbe656427d795a2a695063bf252"
 
 [[metadata.targets]]
 requires_python = ">=3.13"
@@ -35,32 +35,34 @@ files = [
 
 [[package]]
 name = "benchmark-systems"
-version = "1.0.7"
+version = "1.1.2"
 requires_python = ">=3.13"
-git = "https://github.com/ggonzm/benchmark-systems.git"
-ref = "0334ffd8179fa5355236d0aeb00aef42b3280517"
-revision = "0334ffd8179fa5355236d0aeb00aef42b3280517"
-summary = "Open collection of model predictive control (MPC) benchmarking problems"
+summary = "Nonlinear benchmark models for numerical simulation, symbolic analysis and trajectory animation"
 groups = ["default", "replay"]
 dependencies = [
     "numpy>=2.1.0",
     "scipy>=1.14.1",
     "solve-dae>=0.2.3",
 ]
+files = [
+    {file = "benchmark_systems-1.1.2-py3-none-any.whl", hash = "sha256:9d62cb6e6575a332c8ef1521e0f9d86cf9263cfcf960bb45f09cc9a03fe34b9a"},
+    {file = "benchmark_systems-1.1.2.tar.gz", hash = "sha256:4d5b636caecb588624268dc3c405ee9b167dfe345dad2d5a0458619347aff475"},
+]
 
 [[package]]
 name = "benchmark-systems"
-version = "1.0.7"
+version = "1.1.2"
 extras = ["anim"]
 requires_python = ">=3.13"
-git = "https://github.com/ggonzm/benchmark-systems.git"
-ref = "0334ffd8179fa5355236d0aeb00aef42b3280517"
-revision = "0334ffd8179fa5355236d0aeb00aef42b3280517"
-summary = "Open collection of model predictive control (MPC) benchmarking problems"
+summary = "Nonlinear benchmark models for numerical simulation, symbolic analysis and trajectory animation"
 groups = ["replay"]
 dependencies = [
-    "benchmark-systems @ git+https://github.com/ggonzm/benchmark-systems.git@0334ffd8179fa5355236d0aeb00aef42b3280517",
+    "benchmark-systems==1.1.2",
     "matplotlib>=3.10.9",
+]
+files = [
+    {file = "benchmark_systems-1.1.2-py3-none-any.whl", hash = "sha256:9d62cb6e6575a332c8ef1521e0f9d86cf9263cfcf960bb45f09cc9a03fe34b9a"},
+    {file = "benchmark_systems-1.1.2.tar.gz", hash = "sha256:4d5b636caecb588624268dc3c405ee9b167dfe345dad2d5a0458619347aff475"},
 ]
 
 [[package]]
@@ -996,17 +998,16 @@ files = [
 
 [[package]]
 name = "python-dateutil"
-version = "3.0.0"
-requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
+version = "4.0.0"
+requires_python = ">=3.11"
 summary = "Extensions to the standard Python datetime module"
 groups = ["dev", "replay"]
 dependencies = [
-    "six>=1.6",
     "tzdata",
 ]
 files = [
-    {file = "python_dateutil-3.0.0-py2.py3-none-any.whl", hash = "sha256:3c79630202e4152c6add678446984236efe4f57e84d8e892aab0637bab82e9fd"},
-    {file = "python_dateutil-3.0.0.tar.gz", hash = "sha256:7ebcb3c29a92f3ceafe79a7a48a5c45677e9e004bbeec5742ac0bbb00560b7a2"},
+    {file = "python_dateutil-4.0.0-py3-none-any.whl", hash = "sha256:a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c"},
+    {file = "python_dateutil-4.0.0.tar.gz", hash = "sha256:d7295ff14fdc0f92f662100bfb6c551d160ca090f2939f1ec5b9794265c03f06"},
 ]
 
 [[package]]
@@ -1120,17 +1121,6 @@ files = [
     {file = "scipy-1.18.1-cp315-cp315t-win_amd64.whl", hash = "sha256:5632e3ae3d09197c446310cd5187de63e28448ce22f0f67b2b93d97503c0c230"},
     {file = "scipy-1.18.1-cp315-cp315t-win_arm64.whl", hash = "sha256:eda632a7981f69730d6281f451db9c1c370993a2c0d7ddb43e2a809a2862b83a"},
     {file = "scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307"},
-]
-
-[[package]]
-name = "six"
-version = "1.17.0"
-requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
-summary = "Python 2 and 3 compatibility utilities"
-groups = ["dev", "replay"]
-files = [
-    {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
-    {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
 ]
 
 [[package]]
