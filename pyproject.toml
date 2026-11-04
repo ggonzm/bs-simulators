@@ -1,0 +1,50 @@
+[project]
+name = "bs-simulators"
+version = "0.1.0"
+description = "Live simulators and transport adapters for benchmark-systems models"
+requires-python = ">=3.13"
+readme = "README.md"
+license = {text = "MIT"}
+dependencies = [
+    "benchmark-systems>=1.0.7,<2",
+    "numpy>=2.1.0",
+    "scipy>=1.14.1",
+]
+
+[project.optional-dependencies]
+replay = [
+    "benchmark-systems[anim]>=1.0.7,<2",
+    "Pillow>=11.0.0",
+]
+
+[project.scripts]
+bs-simulators = "bs_simulators.__main__:main"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+
+# The core release is not on PyPI yet. This development-only resolution pin
+# does not change the version requirement published in wheel metadata.
+[tool.pdm.resolution.overrides]
+benchmark-systems = "git+https://github.com/ggonzm/benchmark-systems.git@0334ffd8179fa5355236d0aeb00aef42b3280517"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/bs_simulators/"]
+excludes = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
+source-includes = ["tests/", "examples/", "docs/", "README.md", "AGENTS.md", "LICENSE*", ".python-version"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ipykernel>=7.4.0",
+    "pandas>=3.1.0",
+]
