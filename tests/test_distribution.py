@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_runtime_version_matches_new_distribution():
     project = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['project']
     assert project['name'] == 'bs-simulators'
-    assert project['version'] == bs_simulators.__version__ == '0.1.0'
+    assert project['version'] == bs_simulators.__version__
     assert any(re.match(r'^benchmark[-_]systems(?:\s|[<>=!~;\[]|$)', dependency,
                         re.IGNORECASE) for dependency in project['dependencies'])
 
@@ -69,7 +69,7 @@ def test_built_wheel_contains_viewer_and_external_core_requirement():
         metadata_path = next(name for name in names if name.endswith('.dist-info/METADATA'))
         metadata = Parser().parsestr(archive.read(metadata_path).decode('utf-8'))
         assert metadata['Name'] == 'bs-simulators'
-        assert metadata['Version'] == '0.1.0'
+        assert metadata['Version'] == bs_simulators.__version__
         assert any(re.match(r'^benchmark[-_]systems(?:\s|[<>=!~;\[]|$)', dependency,
                             re.IGNORECASE) for dependency in metadata.get_all('Requires-Dist', []))
         entrypoints_path = next(name for name in names if name.endswith('.dist-info/entry_points.txt'))

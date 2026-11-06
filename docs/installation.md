@@ -8,7 +8,7 @@ pdm sync -G dev
 pdm run bs-simulators --help
 ```
 
-Runtime dependencies, including `benchmark-systems>=1.1.2,<2`, are resolved
+Runtime dependencies, including `benchmark-systems>=1.2.0`, are resolved
 from PyPI. The development group includes the kernel and data tools needed
 by the example notebook. Select this project's `.venv` Python interpreter
 when opening the notebook in an editor.

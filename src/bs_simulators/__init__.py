@@ -7,7 +7,7 @@ dependency.
 
 from importlib import import_module
 
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 
 __all__ = ['Simulation', 'Stepper', 'ODEStepper', 'DAEStepper',
            'InMemoryAdapter', 'SimulationPort',
