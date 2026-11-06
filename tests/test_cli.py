@@ -79,16 +79,20 @@ def test_explicit_flags_and_controller_aliases_reach_simulation(tmp_path, monkey
 @pytest.mark.parametrize('help_option', ['--help', '-h'])
 def test_help_is_flat_and_has_no_filesystem_side_effects(tmp_path, monkeypatch, help_option):
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, [help_option], terminal_width=150, env={'COLUMNS': '150'})
+    result = runner.invoke(
+        app, [help_option], terminal_width=150,
+        env={'COLUMNS': '150', 'FORCE_COLOR': '1', 'TERM': 'xterm-256color'}, color=True,
+    )
     assert result.exit_code == 0, result.output
-    assert '--duration' in result.output
-    assert '--dt-real' in result.output
-    assert '--controller' in result.output
-    assert '--active-controller' in result.output
-    assert '--x0' in result.output and '--u0' in result.output
+    output = re.sub(r'\x1b\[[0-9;]*m', '', result.output)
+    assert '--duration' in output
+    assert '--dt-real' in output
+    assert '--controller' in output
+    assert '--active-controller' in output
+    assert '--x0' in output and '--u0' in output
     for removed in ('--theta0', '--omega0', '--m ', '--length', '--drag', '--inputs'):
-        assert removed not in result.output
-    assert 'Commands' not in result.output
+        assert removed not in output
+    assert 'Commands' not in output
     assert list(tmp_path.iterdir()) == []
     unknown = runner.invoke(app, ['unknown-command'])
     assert unknown.exit_code == 2
