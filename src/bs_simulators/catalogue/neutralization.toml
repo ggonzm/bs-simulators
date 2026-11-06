@@ -1,0 +1,63 @@
+name = "neutralization"
+model = "neutralization"
+x0 = [-0.000432, 0.000528, 14.0, 7.0]
+u0 = [15.6]
+dt = 0.1
+t0 = 0.0
+active_controller = "python"
+viewer = "neutralization"
+
+[parameters]
+A = 207.0
+z = 11.5
+Cv4 = 4.59
+n = 0.607
+Wa1 = 0.003
+Wa2 = -0.03
+Wa3 = -0.00305
+Wb1 = 0.0
+Wb2 = 0.03
+Wb3 = 0.00005
+pK1 = 6.35
+pK2 = 10.33
+q1 = 16.6
+d = 0.55
+
+[stepper]
+kind = "dae"
+method = "Radau"
+xdot0 = [0.0, 0.0, 0.0, 0.0]
+fixed_x = [0, 1, 2]
+rtol = 1e-7
+atol = 1e-9
+
+[[state_signals]]
+name = "Wa4"
+unit = "mol/L"
+dtype = "float64"
+direction = "output"
+
+[[state_signals]]
+name = "Wb4"
+unit = "mol/L"
+dtype = "float64"
+direction = "output"
+
+[[state_signals]]
+name = "h"
+unit = "cm"
+dtype = "float64"
+direction = "output"
+
+[[state_signals]]
+name = "pH"
+unit = ""
+dtype = "float64"
+direction = "output"
+
+[[input_signals]]
+name = "q3"
+unit = "L/s"
+dtype = "float64"
+direction = "input"
+lower = 0.0

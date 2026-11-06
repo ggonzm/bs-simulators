@@ -1,8 +1,11 @@
-# Configure a simulation
+# Simulation and steppers
 
 `Simulation` runs a numerical model in its own thread. The model describes
 physics, the stepper advances one integration interval,
 and the simulation manages wall-clock pacing, held inputs and recording.
+The [core class diagram](api.md#functional-core) shows their relationships.
+See [Common pitfalls](common-pitfalls.md) for examples of timing and sensor
+limits in a control loop.
 
 ## An ODE model
 
@@ -34,6 +37,28 @@ until completion; `wait(timeout=0.1)` returns whether it finished within that
 wall-clock timeout. `stop()` requests shutdown and waits for integration to
 finish. A simulation and its stepper belong to a single run; create fresh
 objects to repeat an experiment.
+
+(execution-cadence)=
+## Set the execution cadence
+
+`dt` is the amount of simulated time advanced in each interval. The optional
+`dt_real` argument to `start()` sets the target time between intervals in
+wall-clock seconds. It must be positive and finite, and defaults to `dt`.
+
+For a simulation configured with `dt=1.0`, this run advances 60 simulated
+seconds in 60 intervals, with a target wall-clock duration of 6 seconds:
+
+```python
+simulation.start(duration=60.0, dt_real=0.1)
+simulation.wait()
+```
+
+The worker schedules each interval against the clock at the start of the run.
+If it falls behind, it continues through every interval. The solver still
+advances by `dt`, and each interval uses the last applied input if there is no
+new command. A controller sending commands every 100 ms of wall-clock time
+would target one command per simulated second in this example, subject to
+the timing of its commands relative to the simulation boundaries.
 
 ## Inputs and model signatures
 
@@ -83,11 +108,37 @@ input_signals = [SignalDescriptor("voltage", "V", "float64", "input")]
 ```
 
 Pass these lists when constructing `Simulation`. Each list follows the order
-of its corresponding vector. Input bounds, when supplied, are inclusive and
-checked before a complete command is accepted. `parameters`, snapshots and
-signal descriptions return detached data suitable for notebook inspection.
-The `InMemoryAdapter` can read and write these named signals without knowing
-the model's state layout.
+of its corresponding vector. Each configured endpoint is inclusive.
+
+Input bounds represent actuator limits. The simulator clips each component
+of `u0` and of every valid command before passing it to the model.
+`snapshot()["u"]` gives the effective input, and `snapshot()["input_saturated"]`
+contains one boolean per component in the same order. A flag is true only
+when clipping changed the applied command. It stays with that input until a
+new command is applied.
+
+Output bounds represent sensor limits. Browser instruments also use these
+bounds as [display scales](catalogue.md#instrument-scales-from-signal-descriptions).
+The `InMemoryAdapter` can read and write named signals without knowing the
+model's state layout.
+
+(snapshot-and-measurements)=
+## Simulation snapshots and sensor measurements
+
+| Method | What it returns | When to use it |
+| --- | --- | --- |
+| `snapshot()` | The committed model state `x` before sensor limits, the applied input `u`, and timing and command metadata including `input_saturated`. | Inspect or diagnose the simulated plant. |
+| `read_measurements()` | A mapping from signal names to sensor readings clipped at configured output bounds, applied inputs, time and status. | Feed a controller with the values available to its instruments. |
+
+For example, if the model current is 2.5 A and the current sensor has an
+upper bound of 2 A, the corresponding component of `snapshot()["x"]` is
+2.5, while `read_measurements()["current"]` is 2. The model continues
+integrating from its actual state. Both methods read the latest committed
+state at the time of the call without advancing the simulation. A running
+worker can commit a step between calls.
+
+Over HTTP, [`GET /api/state` and `GET /api/measurements`](http.md) provide
+the corresponding views.
 
 ## A DAE model
 
@@ -161,8 +212,8 @@ work and the viewer route returns 404. Set `viewer="pendulum"` only for a
 compatible pendulum state and parameters; scenes are never inferred from
 vector length.
 
-`create_pendulum()` is a convenience factory returning an ordinary
-`Simulation` with the pendulum model, ODE stepper, named signals and browser
-scene. It contains no independent simulation implementation. The terminal
-example uses this configuration. See the [pendulum guide](pendulum.md) and
-[interactive notebook](../examples/pendulum_core.ipynb).
+The [catalogue](catalogue.md) supplies optional configurations for named
+signals and browser selection. Its values can be overridden for each run;
+this direct model-based API does not require a configuration file. See the
+[pendulum example](pendulum.md) and the
+{download}`interactive notebook <../examples/pendulum_core.ipynb>`.

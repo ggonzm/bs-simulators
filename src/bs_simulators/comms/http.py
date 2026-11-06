@@ -1,4 +1,4 @@
-"""Local HTTP transport for the pendulum proof of concept.
+"""Local HTTP transport for model-independent observation and input submission.
 
 This intentionally small server binds only to loopback. It is for local
 experiments, not public deployment. Control and observation are decoupled
@@ -19,8 +19,9 @@ from ..runtime.protocols import SimulationPort
 def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765, viewer=None):
     """Return an unstarted local HTTP server bound to ``simulation``.
 
-    GET /api/state returns a copied snapshot. GET /api/signals returns signal
-    metadata. POST /api/input accepts ``{"u": [torque]}`` with optional
+    GET /api/state returns a copied snapshot. GET /api/measurements returns
+    named measurements. GET /api/signals returns signal metadata.
+    POST /api/input accepts a complete ``{"u": [...]}`` vector with optional
     UTC ``source_timestamp``. The fixed HTTP controller identity
     is ``http``; it can write only when that controller is explicitly selected.
     The optional viewer is selected explicitly or from snapshot metadata.
@@ -28,28 +29,34 @@ def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765, vi
     Requests acknowledge acceptance, not application.
     The next committed snapshot's input_seq identifies an applied command.
     """
+    from ..viewers import VIEWER_FILES, ASSET_FILES
+
     if host not in ('127.0.0.1', 'localhost'):
         raise ValueError('the demo server must bind to loopback')
     selected_viewer = viewer if viewer is not None else simulation.snapshot().get('viewer')
-    if selected_viewer not in (None, 'pendulum'):
+    if selected_viewer is not None and selected_viewer not in VIEWER_FILES:
         raise ValueError('unknown packaged viewer')
     adapter = InMemoryAdapter(simulation, controller_id='http')
 
     class Handler(BaseHTTPRequestHandler):
+        """Handle local API and viewer requests using the server-bound simulation adapter."""
         protocol_version = 'HTTP/1.0'
 
         def setup(self):
+            """Initialize request streams and limit socket waits to three seconds."""
             super().setup()
             self.connection.settimeout(3.0)
 
         def log_message(self, format, *args):
             # Polling should not flood a user's terminal at 30 Hz.
+            """Suppress default request logging so browser polling does not flood the terminal."""
             pass
 
         def _send(self, code, payload, content_type='application/json; charset=utf-8'):
             # Windows may reset a connection closed with an unread POST body,
             # hiding the error response. Drain only small, declared bodies;
             # the socket timeout still bounds an incomplete request.
+            """Send JSON or raw bytes with no-cache headers, tolerating client disconnects."""
             if code >= 400 and self.command == 'POST' and not getattr(self, '_body_consumed', False):
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
@@ -74,6 +81,7 @@ def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765, vi
         def _local_request(self):
             # Validate Host too, so DNS rebinding cannot turn arbitrary sites
             # into an apparently same-origin caller of this local service.
+            """Reject unexpected Host or cross-origin headers, sending an error response on rejection."""
             expected_port = self.server.server_address[1]
             hosts = {f'127.0.0.1:{expected_port}', f'localhost:{expected_port}'}
             if expected_port == 80:
@@ -87,28 +95,42 @@ def create_server(simulation: SimulationPort, *, host='127.0.0.1', port=8765, vi
                 return False
             return True
 
+        def _resource(self, name, content_type):
+            """Serve a resource chosen from the explicit scene/asset registry."""
+            try:
+                payload = files('bs_simulators.viewers').joinpath(name).read_bytes()
+            except FileNotFoundError:
+                self._send(404, {'error': 'viewer resource is unavailable'})
+                return
+            self._send(200, payload, content_type)
+
         def do_GET(self):
+            """Serve state, measurements, signal descriptions or the packaged viewer."""
             if not self._local_request():
                 return
             path = urlsplit(self.path).path
             if path == '/api/state':
                 self._send(200, adapter.read_snapshot())
+            elif path == '/api/measurements':
+                self._send(200, adapter.read_measurements())
             elif path == '/api/signals':
                 self._send(200, adapter.describe_signals())
+            elif path.startswith('/assets/'):
+                name = path.removeprefix('/assets/')
+                if name not in ASSET_FILES:
+                    self._send(404, {'error': 'unknown viewer resource'})
+                    return
+                self._resource(name, ASSET_FILES[name])
             elif path in ('/', '/viewer.html'):
                 if selected_viewer is None:
                     self._send(404, {'error': 'no viewer is configured for this simulation'})
                     return
-                try:
-                    payload = files('bs_simulators.viewers').joinpath('pendulum.html').read_bytes()
-                except FileNotFoundError:
-                    self._send(404, {'error': 'viewer is unavailable'})
-                    return
-                self._send(200, payload, 'text/html; charset=utf-8')
+                self._resource(VIEWER_FILES[selected_viewer], 'text/html; charset=utf-8')
             else:
                 self._send(404, {'error': 'unknown endpoint'})
 
         def do_POST(self):
+            """Validate a bounded JSON input request and acknowledge acceptance or report its rejection."""
             if not self._local_request():
                 return
             if urlsplit(self.path).path != '/api/input':

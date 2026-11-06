@@ -4,30 +4,42 @@ The bridge submits torque and reads measurements through a Python Protocol.
 An optional local HTTP server lets a browser observe the same experiment.
 """
 
-import argparse
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 import threading
 import time
+from typing import Annotated
 
-from bs_simulators import InMemoryAdapter, create_pendulum
-from bs_simulators.comms.http import create_server
+import typer
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--duration', type=float, default=6.0)
-    parser.add_argument('--port', type=int, help='optional local read-only viewer port')
-    parser.add_argument('--record', help='new JSONL recording path')
-    args = parser.parse_args()
-    if not 5 <= args.duration < float('inf'):
-        parser.error('duration must be finite and at least 5 simulated seconds')
-    simulation = create_pendulum(active_controller='plc-demo', dt=0.01)
+def main(
+    duration: Annotated[float, typer.Option('--duration', help='Simulated experiment duration.')] = 6.0,
+    port: Annotated[int | None, typer.Option(
+        '--port', min=0, max=65535, help='Optional local read-only viewer port.',
+    )] = None,
+    record: Annotated[Path | None, typer.Option(
+        '--record', dir_okay=False, help='New JSONL recording path.',
+    )] = None,
+) -> None:
+    """Run the named-signal bridge demonstration."""
+    from bs_simulators import InMemoryAdapter, load_configuration
+    from bs_simulators.comms.http import create_server
+
+    if not 5 <= duration < float('inf'):
+        raise typer.BadParameter('duration must be finite and at least 5 simulated seconds',
+                                 param_hint='--duration')
+    simulation = load_configuration('pendulum').create(active_controller='plc-demo', dt=0.01)
     bridge = InMemoryAdapter(simulation, controller_id='plc-demo')
-    server = create_server(simulation, port=args.port) if args.port is not None else None
+    server = None
     server_thread = None
     try:
-        simulation.start(duration=args.duration, record=args.record)
+        try:
+            server = create_server(simulation, port=port) if port is not None else None
+            simulation.start(duration=duration, record=record)
+        except (ValueError, OSError) as exc:
+            raise typer.BadParameter(str(exc)) from exc
         if server is not None:
             server_thread = threading.Thread(target=server.serve_forever, daemon=True)
             server_thread.start()
@@ -55,9 +67,12 @@ def main():
         print(json.dumps(bridge.read_snapshot()), flush=True)
     except KeyboardInterrupt:
         pass
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     finally:
         simulation.stop()
-        if server_thread is not None:
+        if server_thread is not None and server_thread.ident is not None:
             server.shutdown()
             server_thread.join()
         if server is not None:
@@ -65,4 +80,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    typer.run(main)

@@ -8,3 +8,6 @@ __pypackages__/
 dist/
 *.egg-info/
 .vscode/
+
+docs/_build/
+.ipynb_checkpoints/

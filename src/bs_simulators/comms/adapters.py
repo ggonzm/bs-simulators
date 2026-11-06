@@ -16,19 +16,24 @@ class InMemoryAdapter:
     """
 
     def __init__(self, port: SimulationPort, *, controller_id='python'):
+        """Bind a simulation port and validate the controller identity used for every write."""
         self._port = port
         self.controller_id = controller_identifier(controller_id)
 
     def read_snapshot(self):
+        """Read the committed state and command metadata through the simulation port."""
         return self._port.snapshot()
 
     def read_measurements(self):
+        """Read state and held input values by signal name, together with time and status."""
         return self._port.read_measurements()
 
     def describe_signals(self):
+        """Read ordered signal descriptions for mapping named inputs and measurements."""
         return self._port.describe_signals()
 
     def write_inputs(self, u, *, source_timestamp=None):
+        """Submit a complete input vector as this controller; return acceptance metadata, without waiting for application."""
         return self._port.submit_input(u, controller_id=self.controller_id,
                                        source_timestamp=source_timestamp)
 

@@ -16,7 +16,7 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from benchmark_systems.models import pendulum
-from bs_simulators import create_pendulum, ODEStepper
+from bs_simulators import load_configuration, ODEStepper
 from bs_simulators.runtime import core
 from bs_simulators.comms.http import create_server
 
@@ -92,7 +92,7 @@ def test_invalid_model_output_does_not_commit_a_partial_step():
 
 
 def test_stopped_simulation_rejects_commands_and_restart():
-    simulation = create_pendulum()
+    simulation = load_configuration('pendulum').create()
     simulation.stop()
     assert simulation.snapshot()['status'] == 'stopped'
     with pytest.raises(RuntimeError):
@@ -104,7 +104,7 @@ def test_stopped_simulation_rejects_commands_and_restart():
 def test_recording_preserves_existing_file(tmp_path):
     record = tmp_path / 'existing.jsonl'
     record.write_text('existing evidence\n')
-    simulation = create_pendulum()
+    simulation = load_configuration('pendulum').create()
     with pytest.raises(FileExistsError):
         simulation.start(record=record)
     assert record.read_text() == 'existing evidence\n'
@@ -113,7 +113,7 @@ def test_recording_preserves_existing_file(tmp_path):
 
 
 def test_snapshots_are_detached_and_acknowledgement_is_not_application():
-    simulation = create_pendulum(u0=0.2)
+    simulation = load_configuration('pendulum').create(u0=[0.2])
     ack = simulation.set_input([0.8])
     snapshot = simulation.snapshot()
     assert snapshot['u'] == [0.2]
@@ -125,7 +125,7 @@ def test_snapshots_are_detached_and_acknowledgement_is_not_application():
     clean = simulation.snapshot()
     assert clean['x'][0] != 999
     assert clean['u'] == [0.2]
-    assert clean['parameters']['L'] == 1.0
+    assert clean['parameters']['L'] == 2.0
     simulation.stop()
 
 
@@ -141,7 +141,7 @@ def _wait_for(predicate, timeout=10):
 
 def test_zoh_and_recorded_trajectory_match_offline_without_a_viewer(tmp_path):
     record = tmp_path / 'trajectory.jsonl'
-    simulation = create_pendulum(dt=0.01, theta0=0.2, u0=0.1)
+    simulation = load_configuration('pendulum').create(x0=[0.2, 0.0], u0=[0.1], dt=0.01)
     simulation.start(duration=0.3, record=record)
     try:
         _wait_for(lambda: simulation.snapshot()['seq'] >= 5)
@@ -163,7 +163,7 @@ def test_zoh_and_recorded_trajectory_match_offline_without_a_viewer(tmp_path):
     expected = np.array(states[0]['x'])
     for left, right, torque in ((0, switch_time, 0.1), (switch_time, 0.3, 0.6)):
         solution = solve_ivp(
-            lambda t, x: pendulum(t, x, m=1, L=1, drag=0.1, u=torque),
+            lambda t, x: pendulum(t, x, **states[0]['parameters'], u=torque),
             (left, right), expected, rtol=1e-10, atol=1e-12,
         )
         assert solution.success
@@ -176,7 +176,7 @@ def test_command_arriving_during_an_interval_applies_only_to_the_next(monkeypatc
     # inside its first wait. No scheduling or elapsed-time threshold is used.
     clock = [0.0]
     monkeypatch.setattr(core, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
-    simulation = create_pendulum(dt=0.1, u0=0.2)
+    simulation = load_configuration('pendulum').create(u0=[0.2], dt=0.1)
     intervals = []
 
     def controlled_wait(timeout):
@@ -211,7 +211,7 @@ def test_command_arriving_during_an_interval_applies_only_to_the_next(monkeypatc
     {'Host': 'unrelated.example'},
 ])
 def test_http_rejects_nonlocal_writers_without_accepting_input(headers):
-    simulation = create_pendulum()
+    simulation = load_configuration('pendulum').create(active_controller='http')
     server = create_server(simulation, port=0)
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
     worker.start()
@@ -243,10 +243,31 @@ def test_real_server_accepts_external_controller_and_runs_without_viewer(tmp_pat
         port = reservation.getsockname()[1]
     base = f'http://127.0.0.1:{port}'
     record = tmp_path / 'server.jsonl'
+    # Keep the server alive until the parent has completed every assertion.
+    # Finite CLI durations are covered separately in test_cli.py.
+    server_script = '''
+import sys
+import threading
+from bs_simulators import load_configuration
+from bs_simulators.comms.http import create_server
+
+simulation = load_configuration('pendulum').create(active_controller='http', dt=0.01)
+server = create_server(simulation, port=int(sys.argv[1]))
+worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.1})
+simulation.start(record=sys.argv[2])
+worker.start()
+try:
+    if sys.stdin.readline().strip() != 'stop':
+        raise RuntimeError('expected explicit stop from the test process')
+finally:
+    simulation.stop()
+    server.shutdown()
+    server.server_close()
+    worker.join(timeout=5)
+'''
     process = subprocess.Popen(
-        [sys.executable, '-m', 'bs_simulators', '--port', str(port),
-         '--dt', '0.01', '--duration', '2', '--record', str(record)],
-        cwd=Path(__file__).parents[1], stdin=subprocess.DEVNULL,
+        [sys.executable, '-c', server_script, str(port), str(record)],
+        cwd=Path(__file__).parents[1], stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     slow_client = None
@@ -300,7 +321,7 @@ def test_real_server_accepts_external_controller_and_runs_without_viewer(tmp_pat
         slow_client.close()
         slow_client = None
         # Finish with neither controller nor viewer connected.
-        stdout, stderr = process.communicate(timeout=10)
+        stdout, stderr = process.communicate(input='stop\n', timeout=10)
         assert process.returncode == 0, (stdout, stderr)
     finally:
         if slow_client is not None:
@@ -309,9 +330,9 @@ def test_real_server_accepts_external_controller_and_runs_without_viewer(tmp_pat
             process.terminate()
             process.communicate(timeout=5)
     states = [json.loads(line) for line in record.read_text().splitlines()]
-    assert states[-1]['seq'] == 200
-    assert states[-1]['t'] == pytest.approx(2.0)
+    assert states[-1]['seq'] >= later['seq']
+    assert states[-1]['t'] == pytest.approx(states[-1]['seq'] * 0.01)
     assert states[-1]['input_seq'] == ack['input_seq']
     assert states[-1]['u'] == [0.75]
-    assert states[-1]['status'] == 'finished'
+    assert states[-1]['status'] == 'stopped'
     assert all(state['lag'] >= 0 for state in states)

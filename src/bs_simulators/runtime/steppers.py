@@ -15,12 +15,14 @@ from ._validation import _finite, _vector
 
 
 def _readonly_input(name, values, size=None):
+    """Return a detached finite input vector protected against model-side writes."""
     result = _vector(name, values, size, allow_empty=True)
     result.flags.writeable = False
     return result
 
 
 def _fixed_indices(values):
+    """Normalize unique nonnegative state indices; dimensional bounds are checked when the model is initialized."""
     if values is None:
         return None
     try:
@@ -44,6 +46,7 @@ class _ConfiguredStepper:
     _methods = ()
 
     def __init__(self, *, method, rtol, atol):
+        """Validate the solver method and positive tolerances, leaving the model uninitialized."""
         if not isinstance(method, str) or method not in self._methods:
             raise ValueError(f'method must be one of {self._methods}')
         self._method = method
@@ -54,10 +57,12 @@ class _ConfiguredStepper:
         self._state = None
 
     def _require_initialized(self):
+        """Reject state access or integration before successful initialization."""
         if self._state is None:
             raise RuntimeError('stepper is not initialized; call initialize() first')
 
     def _initial_values(self, model, x0, t0, u0):
+        """Validate first-use model data and return detached time, state and read-only input values."""
         if self._state is not None:
             raise RuntimeError('stepper is already initialized; create a new stepper for another run')
         if not callable(model):
@@ -65,6 +70,7 @@ class _ConfiguredStepper:
         return (_finite('t0', t0), _vector('x0', x0), _readonly_input('u0', u0))
 
     def _step_values(self, dt, u):
+        """Validate an integration interval and return its absolute end time and frozen input vector."""
         self._require_initialized()
         dt = _finite('dt', dt, positive=True)
         held = _readonly_input('u', u, self._input_size)
@@ -115,6 +121,7 @@ class ODEStepper(_ConfiguredStepper):
     _methods = ('RK23', 'RK45', 'DOP853', 'Radau', 'BDF', 'LSODA')
 
     def __init__(self, *, method='RK45', rtol=1e-7, atol=1e-9):
+        """Configure the SciPy method and error tolerances without binding a model."""
         super().__init__(method=method, rtol=rtol, atol=atol)
 
     def initialize(self, model, x0, *, t0=0.0, u0) -> None:
@@ -141,6 +148,7 @@ class ODEStepper(_ConfiguredStepper):
         start, state, _ = self._state
 
         def rhs(time, values):
+            """Evaluate a finite derivative vector with the interval input held constant."""
             return _vector('model derivative', self._model(time, values, held), state.size)
 
         result = solve_ivp(rhs, (start, target), state.copy(), t_eval=[target],
@@ -186,11 +194,13 @@ class DAEStepper(_ConfiguredStepper):
     _methods = ('Radau', 'BDF')
 
     def __init__(self, xdot0, *, fixed_x=None, method='Radau', rtol=1e-7, atol=1e-9):
+        """Configure the solver, derivative guess and states preserved during consistency correction."""
         super().__init__(method=method, rtol=rtol, atol=atol)
         self._xdot0 = _vector('xdot0', xdot0)
         self._fixed_x = _fixed_indices(fixed_x)
 
     def _consistent(self, model, time, state, derivative, held):
+        """Return consistent state and derivative copies, preserving fixed states and checking residual tolerances."""
         size = state.size
         fixed = np.arange(size) if self._fixed_x is None else self._fixed_x
         if fixed.size and np.any(fixed >= size):
@@ -198,6 +208,7 @@ class DAEStepper(_ConfiguredStepper):
         original = state.copy()
 
         def residual(at, values, rates):
+            """Evaluate the finite residual vector used for boundary consistency correction."""
             return _vector('model residual', model(at, values, rates, held), size)
 
         initial_residual = residual(time, state.copy(), derivative.copy())
@@ -250,6 +261,7 @@ class DAEStepper(_ConfiguredStepper):
         )
 
         def residual(time, values, rates):
+            """Evaluate a finite residual vector with the interval input held constant."""
             return _vector('model residual', self._model(time, values, rates, held), state.size)
 
         result = solve_dae(residual, (start, target), state.copy(), derivative.copy(),

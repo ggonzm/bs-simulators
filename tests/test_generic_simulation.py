@@ -2,6 +2,7 @@
 
 import json
 import threading
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -11,6 +12,7 @@ from scipy.integrate import solve_ivp
 
 from benchmark_systems import models
 from bs_simulators.comms.http import create_server
+from bs_simulators.runtime import core
 from bs_simulators.runtime.core import Simulation
 from bs_simulators.runtime.signals import SignalDescriptor
 from bs_simulators.runtime.steppers import ODEStepper, DAEStepper
@@ -50,6 +52,61 @@ def test_nonzero_initial_time_uses_absolute_rhs_and_relative_duration():
     assert state['t'] == pytest.approx(13.02)
     assert state['x'] == pytest.approx([2 + (13.02**2 - 13**2) / 2])
     assert state['seq'] == 2
+
+
+@pytest.mark.parametrize(('dt_real', 'waits', 'elapsed', 'lag'), [
+    (None, [0.25, 0.1875, 0], 1.25, 0.5),
+    (0.5, [0.5, 0.4375, 0], 1.75, 0.25),
+    (0.125, [0.125, 0.0625, 0], 1.0, 0.625),
+])
+def test_wall_clock_pacing_preserves_the_simulation_step(
+        monkeypatch, dt_real, waits, elapsed, lag):
+    now = 100.0
+    observed_waits = []
+    integration_costs = iter([0.0625, 0.75, 0])
+    stepper = ODEStepper()
+    integrate = stepper.step
+
+    def wait(timeout):
+        nonlocal now
+        observed_waits.append(timeout)
+        now += timeout
+        return False
+
+    def step(dt, u):
+        nonlocal now
+        result = integrate(dt, u)
+        now += next(integration_costs)
+        return result
+
+    simulation = Simulation(lambda t, x: [t], stepper=stepper,
+                            x0=[2], u0=[], t0=4, dt=0.25)
+    monkeypatch.setattr(core, 'time', SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(simulation._stop_event, 'wait', wait)
+    monkeypatch.setattr(stepper, 'step', step)
+    pacing = {} if dt_real is None else {'dt_real': dt_real}
+
+    state = finish(simulation, 0.75, **pacing)
+
+    assert observed_waits == pytest.approx(waits)
+    assert state['seq'] == 3
+    assert state['t'] == pytest.approx(4.75)
+    assert state['x'] == pytest.approx([2 + (4.75**2 - 4**2) / 2])
+    assert state['wall_elapsed'] == pytest.approx(elapsed)
+    assert state['lag'] == pytest.approx(lag)
+
+
+@pytest.mark.parametrize('dt_real', [0, -1, np.inf, np.nan, True])
+def test_invalid_wall_step_preserves_ready_state_and_does_not_open_record(tmp_path, dt_real):
+    simulation = Simulation(lambda t, x: [1], x0=[0], u0=[])
+    record = tmp_path / 'invalid-pacing.jsonl'
+    before = simulation.snapshot()
+
+    with pytest.raises(ValueError, match='dt_real'):
+        simulation.start(duration=0.01, dt_real=dt_real, record=record)
+
+    assert simulation.snapshot() == before
+    assert not record.exists()
 
 
 def test_multi_input_model_receives_complete_vector():
@@ -128,7 +185,7 @@ def test_complete_multi_input_command_rejects_invalid_component_atomically():
     simulation.submit_input([0.5, 1.0], controller_id='python')
     before = simulation.snapshot()
     with pytest.raises(ValueError):
-        simulation.submit_input([-0.5, 3.0], controller_id='python')
+        simulation.submit_input([-0.5, np.inf], controller_id='python')
     after = simulation.snapshot()
     assert after == before
     state = finish(simulation, 0.01)
@@ -136,10 +193,46 @@ def test_complete_multi_input_command_rejects_invalid_component_atomically():
     assert state['x'] == pytest.approx([0.015])
 
 
+def test_saturation_tracks_committed_input_and_preserves_physical_state(tmp_path):
+    simulation = Simulation(
+        lambda t, x, *, u: [sum(u)], x0=[1.5], u0=[2, -2, 3],
+        input_signals=[
+            SignalDescriptor('a', '', 'float64', 'input', upper=1),
+            SignalDescriptor('b', '', 'float64', 'input', lower=-1),
+            SignalDescriptor('c', '', 'float64', 'input'),
+        ],
+        state_signals=[SignalDescriptor('reading', '', 'float64', 'output', upper=1)],
+    )
+    initial = simulation.snapshot()
+    assert initial['u'] == [1, -1, 3]
+    assert initial['input_saturated'] == [True, True, False]
+    assert initial['x'] == [1.5]
+    assert simulation.read_measurements()['reading'] == 1
+
+    simulation.set_input([1, -2, 4])
+    assert simulation.snapshot()['input_saturated'] == initial['input_saturated']
+    record = tmp_path / 'saturation.jsonl'
+    state = finish(simulation, 0.02, record=record)
+    assert state['u'] == [1, -1, 4]
+    assert state['input_saturated'] == [False, True, False]
+    assert state['x'] == pytest.approx([1.58])
+    assert simulation.read_measurements()['reading'] == 1
+    first, *rest = [json.loads(line) for line in record.read_text().splitlines()]
+    assert first['input_saturated'] == [True, True, False]
+    assert all(row['input_saturated'] == [False, True, False] for row in rest)
+
+
 def test_generic_http_serves_model_data_without_guessing_pendulum_viewer():
     simulation = Simulation(lambda t, x, *, u: [u[0], u[1], u[0] - u[1]],
                             stepper=ODEStepper(), x0=[1, 2, 3], u0=[0, 0],
-                            active_controller='http')
+                            active_controller='http', state_signals=[
+                                SignalDescriptor('x0', '', 'float64', 'output', upper=0.5),
+                                SignalDescriptor('x1', '', 'float64', 'output'),
+                                SignalDescriptor('x2', '', 'float64', 'output'),
+                            ], input_signals=[
+                                SignalDescriptor('u0', '', 'float64', 'input'),
+                                SignalDescriptor('u1', '', 'float64', 'input', upper=3),
+                            ])
     server = create_server(simulation, port=0)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -150,6 +243,8 @@ def test_generic_http_serves_model_data_without_guessing_pendulum_viewer():
         assert state['x'] == [1, 2, 3]
         assert state['u'] == [0, 0]
         assert state['viewer'] is None
+        with urlopen(base + '/api/measurements', timeout=2) as response:
+            assert json.load(response)['x0'] == 0.5
         with urlopen(base + '/api/signals', timeout=2) as response:
             signals = json.load(response)
         assert {signal['name'] for signal in signals} >= {'x0', 'x1', 'x2', 'u0', 'u1'}
@@ -164,8 +259,11 @@ def test_generic_http_serves_model_data_without_guessing_pendulum_viewer():
             ack = json.load(response)
         state = finish(simulation, 0.01)
         assert state['input_seq'] == ack['accepted_input_seq']
-        assert state['u'] == [2, 5]
-        assert state['x'] == pytest.approx([1.02, 2.05, 2.97])
+        with urlopen(base + '/api/state', timeout=2) as response:
+            state = json.load(response)
+        assert state['u'] == [2, 3]
+        assert state['input_saturated'] == [False, True]
+        assert state['x'] == pytest.approx([1.02, 2.03, 2.99])
     finally:
         simulation.stop()
         server.shutdown()
@@ -238,7 +336,8 @@ def test_failed_interval_does_not_commit_state_or_command():
         if u != 0:
             raise RuntimeError('deliberate integration failure')
         return [0]
-    simulation = Simulation(broken, stepper=ODEStepper(), x0=[4], u0=[0])
+    simulation = Simulation(broken, stepper=ODEStepper(), x0=[4], u0=[0],
+                            input_signals=[SignalDescriptor('u', '', 'float64', 'input', upper=1)])
     before = simulation.snapshot()
     simulation.submit_input([2], controller_id='python')
     simulation.start(duration=0.01)
@@ -247,7 +346,7 @@ def test_failed_interval_does_not_commit_state_or_command():
         assert completed
         state = simulation.snapshot()
         assert state['status'] == 'error'
-        for key in ('t', 'x', 'u', 'seq', 'input_seq'):
+        for key in ('t', 'x', 'u', 'input_saturated', 'seq', 'input_seq'):
             assert state[key] == before[key]
     finally:
         simulation.stop()
@@ -269,6 +368,25 @@ def test_index_one_dae_reconciles_algebraic_state_at_input_boundary():
     assert abs(stepper.x[0] - before[0]) < 0.02
     assert stepper.x[1] - before[1] > 1.9
     assert np.linalg.norm(index_one(stepper.t, stepper.x, stepper.xdot, [2]), np.inf) < 1e-6
+
+
+def test_dae_consistency_uses_saturated_initial_and_applied_inputs():
+    simulation = Simulation(
+        index_one, stepper=DAEStepper([0, 0], fixed_x=[0]),
+        x0=[1, 1], u0=[4],
+        input_signals=[SignalDescriptor('u', '', 'float64', 'input', -2, 2)],
+        input_map=lambda u: {'u': u},
+    )
+    initial = simulation.snapshot()
+    assert initial['x'] == pytest.approx([1, 3])
+    assert initial['u'] == [2]
+    assert initial['input_saturated'] == [True]
+
+    simulation.set_input([-4])
+    state = finish(simulation, 0.01)
+    assert state['u'] == [-2]
+    assert state['input_saturated'] == [True]
+    assert state['x'][1] == pytest.approx(state['x'][0] - 2)
 
 
 def test_dae_failed_consistency_is_atomic():

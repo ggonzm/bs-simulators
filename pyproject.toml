@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=2.1.0",
     "scipy>=1.14.1",
     "solve-dae>=0.2.4",
+    "typer>=0.27.3",
 ]
 
 [project.optional-dependencies]
@@ -25,22 +26,33 @@ bs-simulators = "bs_simulators.__main__:main"
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+
 [tool.pdm]
 distribution = true
 
 [tool.pdm.build]
 package-dir = "src"
 includes = ["src/bs_simulators/"]
-excludes = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
-source-includes = ["tests/", "examples/", "docs/", "README.md", "AGENTS.md", "LICENSE*", ".python-version"]
+excludes = ["docs/_build/**", "**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
+source-includes = ["tests/", "examples/", "docs/", "README.md", "AGENTS.md", "LICENSE*", ".python-version", ".readthedocs.yaml"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "--strict-markers --strict-config"
-
+[tool.pdm.scripts]
+docs-build = "sphinx-build -W --keep-going -b html docs docs/_build/html"
+docs-test = "sphinx-build -W --keep-going -b doctest docs docs/_build/doctest"
+docs-serve = "sphinx-autobuild docs docs/_build/html --host 127.0.0.1 --port 8001 --watch src/bs_simulators"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
     "ipykernel>=7.4.0",
     "pandas>=3.1.0",
+]
+docs = [
+    "sphinx<10,>=8",
+    "myst-parser<6,>=4",
+    "pydata-sphinx-theme<1,>=0.16",
+    "sphinx-autobuild>=2025.8.25",
 ]

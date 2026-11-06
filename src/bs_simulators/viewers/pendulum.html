@@ -1,94 +1,25 @@
 <!doctype html>
-<html lang="es">
+<html lang="en" data-viewer="pendulum">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Péndulo</title>
-<style>
- :root{font:14px Arial,sans-serif;color:#222;background:white;color-scheme:light}
- *{box-sizing:border-box}body{max-width:680px;margin:0 auto;padding:22px 20px}
- h1{font-size:19px;font-weight:400;text-align:center;margin:8px 0 0}
- canvas{display:block;width:100%;aspect-ratio:1 / 1}
- #time{text-align:center;font-size:14px;font-variant-numeric:tabular-nums;margin:-6px 0 22px}
- #status{font-size:12px;color:#666;text-align:center;min-height:18px;margin:0 0 16px}
- details{font-size:12px;color:#666;border-top:1px solid #ddd;padding:12px 0;line-height:1.8}
- summary{cursor:pointer;width:fit-content}dl{display:grid;grid-template-columns:auto 1fr;gap:2px 16px;margin:12px 0}
- dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}#error{color:#9b2424;white-space:pre-wrap}
- @media(max-width:480px){body{padding:12px 8px}dl{grid-template-columns:1fr;gap:0}dd{margin-bottom:8px}}
-</style>
-<h1>Péndulo</h1>
-<canvas id="scene" aria-label="Péndulo: ejes x e y en metros, ángulo cero en la vertical inferior"></canvas>
+<title>Pendulum</title>
+<link rel="stylesheet" href="/assets/viewer.css">
+<h1>Pendulum</h1>
+<canvas id="scene" aria-label="Pendulum in Cartesian coordinates"></canvas>
 <p id="time">t = — s</p>
-<p id="status" role="status">Conectando con el simulador…</p>
+<p id="status" role="status">Connecting to the simulator…</p>
 <details>
- <summary>Datos de la simulación</summary>
+ <summary>Simulation data</summary>
  <dl>
-  <dt>Ángulo / velocidad</dt><dd id="motion">—</dd>
-  <dt>Par aplicado</dt><dd id="torque">—</dd>
-  <dt>Parámetros</dt><dd id="parameters">—</dd>
-  <dt>Controlador seleccionado</dt><dd id="controller">—</dd>
-  <dt>Tiempo de reloj / retraso</dt><dd id="timing">—</dd>
-  <dt>Secuencia aplicada / pendiente</dt><dd id="sequence">—</dd>
+  <dt>State</dt><dd id="motion">—</dd>
+  <dt>Instrument scales</dt><dd id="scales">—</dd>
+  <dt>Applied input</dt><dd id="input">—</dd>
+  <dt>Parameters</dt><dd id="parameters">—</dd>
+  <dt>Selected controller</dt><dd id="controller">—</dd>
+  <dt>Wall time / lag</dt><dd id="timing">—</dd>
+  <dt>Applied / pending sequence</dt><dd id="sequence">—</dd>
  </dl>
  <p id="error" role="alert"></p>
 </details>
-<script>
-'use strict';
-let state=null;
-const el=id=>document.getElementById(id);
-const fmt=(v,n=2)=>Number.isFinite(v)?v.toFixed(n):'—';
-function draw(){
- const canvas=el('scene'),bounds=canvas.getBoundingClientRect(),w=bounds.width,h=bounds.height,dpr=window.devicePixelRatio||1;
- canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);
- const c=canvas.getContext('2d');c.scale(dpr,dpr);
- const margin={left:66,right:24,top:25,bottom:55};
- const size=Math.max(1,Math.min(w-margin.left-margin.right,h-margin.top-margin.bottom));
- const left=margin.left+(w-margin.left-margin.right-size)/2,top=margin.top;
- const L=state?.parameters?.L||1,limit=1.5*L;
- const px=x=>left+(x+limit)/(2*limit)*size,py=y=>top+(limit-y)/(2*limit)*size;
- c.strokeStyle='#222';c.lineWidth=.8;c.strokeRect(left,top,size,size);
- c.font='12px Arial';c.fillStyle='#222';
- for(let tick=-3;tick<=3;tick++){
-  const value=tick*L/2,x=px(value),y=py(value);
-  c.beginPath();c.moveTo(x,top+size);c.lineTo(x,top+size+4);c.moveTo(left-4,y);c.lineTo(left,y);c.stroke();
-  c.textAlign='center';c.fillText(fmt(value,L<.1?3:1),x,top+size+20);
-  c.textAlign='right';c.fillText(fmt(value,L<.1?3:1),left-9,y+4);
- }
- c.textAlign='center';c.fillText('x (m)',left+size/2,top+size+44);
- c.save();c.translate(left-48,top+size/2);c.rotate(-Math.PI/2);c.fillText('y (m)',0,0);c.restore();
- c.save();c.beginPath();c.rect(left,top,size,size);c.clip();
- c.strokeStyle='#b8b8b8';c.lineWidth=.8;c.beginPath();c.moveTo(left,py(0));c.lineTo(left+size,py(0));c.stroke();
- if(state){
-  const theta=state.x[0],bx=L*Math.sin(theta),by=-L*Math.cos(theta);
-  c.strokeStyle='#696969';c.lineWidth=2;c.beginPath();c.moveTo(px(0),py(0));c.lineTo(px(bx),py(by));c.stroke();
-  c.fillStyle='#4682b4';c.beginPath();c.arc(px(bx),py(by),.08*L/(2*limit)*size,0,2*Math.PI);c.fill();
-  c.fillStyle='#000';c.beginPath();c.arc(px(0),py(0),.04*L/(2*limit)*size,0,2*Math.PI);c.fill();
- }
- c.restore();
-}
-async function poll(){
- try{
-  const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(3000)});
-  if(!response.ok)throw new Error('HTTP '+response.status);
-  const next=await response.json();
-  if(!Array.isArray(next.x)||next.x.length!==2||!next.x.every(Number.isFinite)||!Array.isArray(next.u))throw new Error('Estado inválido');
-  state=next;
-  el('time').textContent='t = '+fmt(state.t,1)+' s';
-  const statuses={ready:'Preparado',running:'En vivo',finished:'Experimento finalizado',stopped:'Simulación detenida',error:'Error de simulación'};
-  el('status').textContent=statuses[state.status]||state.status;
-  el('motion').textContent=fmt(state.x[0],3)+' rad / '+fmt(state.x[1],3)+' rad/s';
-  el('torque').textContent=fmt(state.u[0],3)+' N·m';
-  const p=state.parameters||{};
-  el('parameters').textContent='m = '+fmt(p.m)+' kg; L = '+fmt(p.L)+' m; rozamiento = '+fmt(p.drag);
-  el('controller').textContent=state.active_controller??'—';
-  el('timing').textContent=fmt(state.wall_elapsed)+' s / '+fmt(1000*state.lag,1)+' ms';
-  el('sequence').textContent=state.input_seq+' / '+(state.pending_input_seq??'—');
-  el('error').textContent=state.error||'';draw();
- }catch(error){
-  el('status').textContent=state?'Sin conexión · se conserva la última imagen':'Sin conexión con el simulador';
-  el('error').textContent=error.message;
- }
- setTimeout(poll,50);
-}
-window.addEventListener('resize',draw);draw();poll();
-</script>
+<script type="module" src="/assets/viewer.js"></script>
 </html>

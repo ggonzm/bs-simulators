@@ -19,8 +19,10 @@ from .signals import SignalDescriptor, validate_source_timestamp, controller_ide
 
 @dataclass(frozen=True)
 class _InputCommand:
+    """Immutable input receipt carrying its sequence, controller and diagnostic timestamps."""
     seq: int
     values: tuple[float, ...]
+    saturated: tuple[bool, ...]
     controller_id: str
     received_at: float
     source_timestamp: str | None
@@ -108,9 +110,9 @@ class Simulation:
         self._model_name = getattr(model, '__name__', type(model).__name__)
         self._model = model
         self._input_map = input_map
-        self._u = self._checked_input(held).tolist()
+        self._u, self._input_saturated = self._saturate_input(held.tolist())
         self._stepper = stepper
-        stepper.initialize(self._evaluate, initial, t0=self._t0, u0=held)
+        stepper.initialize(self._evaluate, initial, t0=self._t0, u0=np.asarray(self._u, dtype=float))
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread = None
@@ -125,16 +127,19 @@ class Simulation:
         self._status = 'ready'
         self._error = None
         self._started = None
+        self._dt_real = self.dt
         self._snapshot = self._build_snapshot(0.0)
 
     @staticmethod
     def _copy_parameters(parameters):
+        """Detach model parameters through JSON, normalizing NumPy values and rejecting nonfinite data."""
         if parameters is None:
             return {}
         if not isinstance(parameters, Mapping) or any(not isinstance(key, str) for key in parameters):
             raise ValueError('parameters must be a mapping with string keys')
 
         def convert(value):
+            """Convert NumPy arrays or scalars for JSON serialization; reject unsupported objects."""
             if isinstance(value, np.ndarray):
                 return value.tolist()
             if isinstance(value, np.generic):
@@ -148,6 +153,7 @@ class Simulation:
 
     @staticmethod
     def _descriptors(descriptors, count, prefix, direction):
+        """Build default signal names or validate supplied descriptors against vector size and direction."""
         if descriptors is None:
             return tuple(SignalDescriptor(f'{prefix}{index}', '', 'float64', direction)
                          for index in range(count))
@@ -178,15 +184,23 @@ class Simulation:
         """Return detached model parameters for interactive inspection."""
         return copy.deepcopy(self._parameters)
 
-    def _checked_input(self, u):
-        values = _vector('u', u, self._input_size, allow_empty=True)
-        for value, signal in zip(values, self._input_signals):
-            if ((signal.lower is not None and value < signal.lower)
-                    or (signal.upper is not None and value > signal.upper)):
-                raise ValueError(f'input {signal.name!r} is outside its configured bounds')
-        return values
+    @staticmethod
+    def _clamp(value, signal):
+        """Limit a value to the configured endpoints, if any."""
+        if signal.lower is not None and value < signal.lower:
+            return signal.lower
+        if signal.upper is not None and value > signal.upper:
+            return signal.upper
+        return value
+
+    def _saturate_input(self, values):
+        """Return effective actuator values and a flag for each clipped command."""
+        applied = [self._clamp(value, signal)
+                   for value, signal in zip(values, self._input_signals)]
+        return applied, [value != effective for value, effective in zip(values, applied)]
 
     def _evaluate(self, t, x, *arguments):
+        """Adapt stepper arguments to the model signature, binding physical parameters and mapped inputs."""
         *derivative, u = arguments
         if self._input_map is not None:
             inputs = self._input_map(u.copy())
@@ -201,12 +215,14 @@ class Simulation:
         return self._model(t, x, *derivative, **self._parameters, **inputs)
 
     def _build_snapshot(self, elapsed):
+        """Assemble committed solver state and timing metadata during initialization or while holding the lock."""
         state = {
             't': self._stepper.t, 'x': self._stepper.x.tolist(),
-            'u': list(self._u), 'seq': self._seq, 'input_seq': self._input_seq,
+            'u': list(self._u), 'input_saturated': list(self._input_saturated),
+            'seq': self._seq, 'input_seq': self._input_seq,
             'pending_input_seq': self._pending_sequence(),
             'applied_at_sim_time': self._applied_at,
-            'wall_elapsed': elapsed, 'lag': max(0.0, elapsed - (self._stepper.t - self._t0)),
+            'wall_elapsed': elapsed, 'lag': max(0.0, elapsed - self._seq * self._dt_real),
             'status': self._status, 'parameters': self.parameters,
             'model': self._model_name, 'viewer': self._viewer,
         }
@@ -218,6 +234,7 @@ class Simulation:
         return state
 
     def _input_metadata(self):
+        """Describe the latest received and applied commands; callers hold the lock after initialization."""
         received = self._received_command
         applied = self._applied_command
         return {
@@ -231,11 +248,16 @@ class Simulation:
         }
 
     def _pending_sequence(self):
+        """Return the newest queued or in-flight sequence; callers hold the lock after initialization."""
         command = self._pending or self._inflight
         return command.seq if command else None
 
     def snapshot(self):
-        """Return a detached, JSON-compatible snapshot of committed state."""
+        """Return the committed model state before sensor limits.
+
+        The snapshot includes the applied input vector and its saturation
+        flags. Use read_measurements() for named sensor readings.
+        """
         with self._lock:
             result = copy.deepcopy(self._snapshot)
             result['pending_input_seq'] = self._pending_sequence()
@@ -249,15 +271,21 @@ class Simulation:
                 SignalDescriptor('status', '', 'string', 'output'))]
 
     def read_measurements(self):
-        """Map this model's committed state to its named measurements."""
+        """Return named sensor readings, applied inputs, time and status.
+
+        State readings are clipped at configured output bounds. Use
+        snapshot() to inspect the model state before sensor limits.
+        """
         state = self.snapshot()
-        values = {signal.name: value for signal, value in zip(self._state_signals, state['x'])}
+        values = {signal.name: self._clamp(value, signal)
+                  for signal, value in zip(self._state_signals, state['x'])}
         values.update({signal.name: value for signal, value in zip(self._input_signals, state['u'])})
         values.update(time=state['t'], status=state['status'])
         return values
 
     @property
     def active_controller(self):
+        """Return the controller identity currently authorized to submit inputs."""
         with self._lock:
             return self._active_controller
 
@@ -289,9 +317,11 @@ class Simulation:
 
         Receipt order uses local monotonic time and sequence numbers. A UTC
         source timestamp is diagnostic metadata and never schedules commands.
-        Repeated values are fresh receipts; rejected commands change nothing.
+        Commands outside actuator bounds are clipped per input. Repeated
+        values are fresh receipts; rejected commands change nothing.
         """
-        values = self._checked_input(u).tolist()
+        requested = _vector('u', u, self._input_size, allow_empty=True).tolist()
+        values, saturated = self._saturate_input(requested)
         controller_id = controller_identifier(controller_id)
         source_timestamp = validate_source_timestamp(source_timestamp)
         with self._lock:
@@ -300,20 +330,23 @@ class Simulation:
             if controller_id != self._active_controller:
                 raise PermissionError(f'controller {controller_id!r} is not the active controller')
             self._command_seq += 1
-            self._pending = _InputCommand(self._command_seq, tuple(values), controller_id,
-                                          time.monotonic(), source_timestamp)
+            self._pending = _InputCommand(self._command_seq, tuple(values), tuple(saturated),
+                                          controller_id, time.monotonic(), source_timestamp)
             self._received_command = self._pending
             return {'input_seq': self._command_seq, 'pending_input_seq': self._command_seq,
                     'accepted_input_seq': self._command_seq, 'applied_input_seq': self._input_seq,
                     'controller_id': controller_id, 'received_at_monotonic': self._pending.received_at}
 
-    def start(self, *, duration=None, record=None):
+    def start(self, *, duration=None, record=None, dt_real=None):
         """Start a worker; optionally record initial state and each committed step.
 
         ``duration`` is in simulated seconds. It must be a whole number of
         fixed steps so recorded time and requested duration agree exactly.
         ``record`` is a JSONL path, created exclusively to avoid overwrites.
+        ``dt_real`` is the positive interval between step deadlines in wall-clock
+        seconds. It defaults to ``dt``. The solver always advances by ``dt``.
         """
+        period = self.dt if dt_real is None else _finite('dt_real', dt_real, positive=True)
         steps = None
         if duration is not None:
             duration = _finite('duration', duration, positive=True)
@@ -327,6 +360,7 @@ class Simulation:
             if self._status != 'ready':
                 raise RuntimeError('simulation has already been started or stopped')
             stream = Path(record).open('x', encoding='utf-8') if record is not None else None
+            self._dt_real = period
             self._started = time.monotonic()
             self._status = 'running'
             self._snapshot = self._build_snapshot(0.0)
@@ -335,7 +369,22 @@ class Simulation:
             self._thread.start()
         return self
 
+    def _wait_until(self, deadline):
+        """Wait for a wall-clock deadline, returning true on a stop request."""
+        remaining = deadline - time.monotonic()
+        while remaining > threading.TIMEOUT_MAX:
+            if self._stop_event.wait(threading.TIMEOUT_MAX):
+                return True
+            remaining = deadline - time.monotonic()
+        return self._stop_event.wait(max(0.0, remaining))
+
     def _run(self, steps, stream):
+        """Pace fixed intervals, apply held inputs and publish completed steps from the worker thread.
+
+        Freeze inputs before waiting for each deadline; publish state only after a
+        successful step. Record initial, committed and terminal snapshots when a
+        stream is supplied, then close it even if integration or recording fails.
+        """
         try:
             if stream is not None:
                 stream.write(json.dumps(self.snapshot(), allow_nan=False) + '\n')
@@ -350,8 +399,8 @@ class Simulation:
                 # Freeze at the interval's beginning: commands arriving while
                 # we wait cannot retroactively affect the preceding interval.
                 # Absolute deadlines avoid cumulative sleep/compute drift.
-                deadline = self._started + (self._seq + 1) * self.dt
-                if self._stop_event.wait(max(0.0, deadline - time.monotonic())):
+                deadline = self._started + (self._seq + 1) * self._dt_real
+                if self._wait_until(deadline):
                     break
                 self._stepper.step(self.dt, held)
                 with self._lock:
@@ -359,6 +408,7 @@ class Simulation:
                     self._input_seq = input_seq
                     if command is not None:
                         self._applied_command = command
+                        self._input_saturated = command.saturated
                     self._applied_at = applied_at
                     self._inflight = None
                     self._seq += 1

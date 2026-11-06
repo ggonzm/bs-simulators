@@ -1,123 +1,97 @@
 # bs-simulators
 
-Live simulation, controller adapters and browser visualization for
-[`benchmark-systems`](https://github.com/ggonzm/benchmark-systems) models.
+Live experiments for [benchmark-systems](https://benchmark-systems.readthedocs.io/en/latest/)
+models, with independent simulation workers, external control inputs, local
+HTTP observation and trajectory recording. Python 3.13 or later is required.
 
-Version **0.1.0** provides a model-independent `Simulation` with RK45 ODE
-integration by default and configurable ODE/index-1 DAE steppers, a local HTTP interface, a pendulum Canvas viewer and
-JSONL recording. It requires Python 3.13 or later and
-`benchmark-systems>=1.1.2,<2`, installed from PyPI. Numerical and symbolic
-models, along with offline Matplotlib animations, remain available through
-`benchmark-systems`.
-
-## Install from a source checkout
-
-Run these commands from the repository root with PDM available:
+## Prepare the environment
 
 ```shell
 pdm sync -G dev
+pdm run bs-simulators --help
 ```
 
-This prepares the project's environment from its lockfile, including test and
-notebook tooling. PDM resolves the model library and other package dependencies
-from PyPI.
+The model library is installed from PyPI. The development group includes the
+kernel and data tools for the example notebook.
 
-## Run the pendulum
+## Run a simulation from Python
 
-In the first terminal:
+```python
+from benchmark_systems.models import pendulum
+from bs_simulators import Simulation
+
+simulation = Simulation(pendulum, x0=[0.6, 0.0], u0=[0.0],
+                        parameters={"m": 1.0, "L": 1.0})
+simulation.start(duration=1.0)
+simulation.wait()
+```
+
+Direct numerical callables do not need a catalogue entry. The
+[interactive notebook](examples/pendulum_core.ipynb) demonstrates a scan loop,
+object inspection and optional HTTP visualization.
+
+## Optional catalogue and CLI
 
 ```shell
-pdm run python -m bs_simulators --port 8765 --dt 0.01
+pdm run bs-simulators --list-catalogue
+pdm run bs-simulators --list-models
+pdm run bs-simulators --model pendulum --describe
+pdm run bs-simulators --catalogue pendulum --parameter "m=2.0"
 ```
 
-Open [the local viewer](http://127.0.0.1:8765/). The simulator runs independently
-of the browser and retains the last valid torque until another command arrives.
-Press Ctrl+C in the simulator terminal to stop it. The installed
-`bs-simulators` command provides the same CLI.
-
-In a second terminal:
+Open <http://127.0.0.1:8765/> for the pendulum viewer. Select exactly one of
+`--catalogue`, `--config` or `--model`; running
+without a selection returns an error. The optional catalogue contains bundled,
+read-only TOML defaults; users can override parameters and initial conditions
+or supply a custom file. Creating a simulation never writes a configuration.
+A three-state motor and a DAE neutralization process also include browser scenes:
 
 ```shell
-pdm run python examples/pendulum_sil_controller.py
+pdm run bs-simulators --catalogue dc-motor --parameter "R=3.0" --u0 "[2.0]"
+pdm run bs-simulators --catalogue neutralization
 ```
 
-This example sends torque commands from a separate process and waits until
-they are applied. When the controller exits, the simulator continues with the
-last applied value.
+The current state remains available at `/api/state`. For the separate HTTP
+controller example, start the pendulum with `--controller http` and run
+`pdm run python examples/pendulum_sil_controller.py` in another terminal.
+The last valid input remains active until a new command arrives.
 
-## Use named signals
+## Documentation
 
 ```shell
-pdm run python examples/pendulum_signal_adapter.py --port 8766
+pdm sync -G dev -G docs
+pdm run docs-serve
 ```
 
-This example writes the `torque` signal and reads measurements through
-`InMemoryAdapter`. It selects `plc-demo` as the active controller and optionally
-opens a read-only browser view. It demonstrates the Python interface without
-connecting a physical PLC or implementing an industrial communication protocol.
-
-The [simulation guide](docs/simulation.md) explains model configuration, ODE/DAE
-steppers and named signals. The [pendulum guide](docs/pendulum.md) explains controller selection, signals,
-timestamps and HTTP requests.
-
-## Use the interactive example
-
-Open [`examples/pendulum_core.ipynb`](examples/pendulum_core.ipynb) with the
-project's Python environment. It demonstrates a pendulum controller scan loop
-and exposes signal descriptions, measurements and snapshots for inspection.
-Its cells define the experiment's initial condition, reference and feedback
-settings; browser observation is optional.
+Open <http://127.0.0.1:8001/>. The preview rebuilds when documentation or source
+changes. Start with [installation](docs/installation.md), the
+[pendulum example](docs/pendulum.md), [simulation](docs/simulation.md),
+[architecture](docs/architecture.md) and [API reference](docs/api.md). The
+[configuration catalogue and CLI](docs/catalogue.md) provide optional shortcuts.
 
 ## Record and replay
 
 ```shell
-pdm run python -m bs_simulators --duration 15 --record pendulum-run.jsonl
-```
-
-The simulator records the initial state, each integration interval and a
-terminal snapshot. It stops after 15 simulated seconds and closes its HTTP
-service. An existing recording file is preserved rather than overwritten.
-
-For Matplotlib replay and GIF export:
-
-```shell
+pdm run bs-simulators --catalogue pendulum --duration 5 --record experiment.jsonl
 pdm sync -G dev -G replay
-pdm run python examples/pendulum_sil_replay.py pendulum-run.jsonl --output pendulum.gif
+pdm run python examples/pendulum_sil_replay.py experiment.jsonl --output experiment.gif
 ```
 
-The `replay` extra supplies the original animation helpers and Pillow. The
-replay example reads the completed recording and exports a GIF; it does not
-restart the live simulator.
+The replay example uses the original Matplotlib animation helpers for a
+completed pendulum recording. The live browser scene uses Canvas.
 
-## Package structure
-
-```text
-src/bs_simulators/
-├── runtime/    simulation clock, integration, controller selection and signals
-├── comms/      in-memory adapter and local HTTP transport
-└── viewers/    packaged browser resources
-```
-
-`SimulationPort` is a structural Python protocol used by the adapters. The
-runtime reads numerical models from `benchmark-systems` and runs without
-importing the HTTP or browser components. See the
-[architecture guide](docs/migration.md) for the data flow.
-
-## Validation and scope
+## Development
 
 ```shell
 pdm run pytest
+pdm run docs-build
+pdm run docs-test
 pdm build
 ```
 
-The test suite checks integration, input retention, controller ownership,
-communication behavior and packaged resources. PDM builds the wheel and source
-distribution, including the HTML viewer.
+See [architecture](docs/architecture.md) and [development](docs/development.md).
+The runtime supports configurable ODE integration and index-1 DAE consistency.
+It offers soft real time; industrial protocol bridges, higher-index DAE
+initialization and scenes beyond the three bundled examples require further implementation.
 
-The simulator provides soft real time: scheduling or computation can introduce
-lag, and strict timing deadlines are not guaranteed. The current implementation
-uses Python's standard-library HTTP server, an argparse CLI and browser Canvas.
-Higher-index DAEs, OPC UA/Modbus bridges, pause/reset controls and 3D scenes
-are outside the current prototype.
-MIT licensed. `LICENSE.benchmark-systems` preserves the original library's
-license notices.
+MIT licensed. `LICENSE.benchmark-systems` preserves the model library's notices.

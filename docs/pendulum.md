@@ -1,191 +1,168 @@
-# Live pendulum simulation and replay
+# Simple pendulum example
 
-The `create_pendulum()` factory configures the generic `Simulation` with the
-numerical pendulum model from `benchmark-systems`.
-It advances continuously, receives complete torque commands and publishes the
-latest state for observation. Completed recordings can be replayed separately
-with the original Matplotlib animation helpers.
+We will construct a pendulum simulation directly from its numerical model,
+inspect the object and send torque commands from a Python scan loop. The
+{download}`interactive notebook <../examples/pendulum_core.ipynb>` provides
+the same workflow with separate cells for inspecting variables.
 
-## Start an experiment
-
-From a prepared source checkout, run:
-
-```shell
-pdm run python -m bs_simulators --port 8765 --dt 0.01
-```
-
-Open [the local viewer](http://127.0.0.1:8765/). The browser draws the pendulum
-using Canvas and polls its state approximately every 50 ms. This display rate
-is independent of the integration interval `dt`. Closing the browser leaves
-the simulation running; Ctrl+C in the simulator terminal stops it.
-
-The default pendulum has mass 1 kg, length 1 m, damping coefficient 0.1,
-initial angle 0.6 rad and zero angular velocity and torque. Useful options are:
-
-| Option | Meaning |
-| --- | --- |
-| `--m`, `--length`, `--drag` | Mass, length and rotational damping |
-| `--theta0`, `--omega0` | Initial angle in rad and angular velocity in rad/s |
-| `--u0` | Initial torque in N m, held until a command is applied |
-| `--dt` | Integration interval in simulated seconds |
-| `--controller` / `--active-controller` | Explicit controller identity; default `http` |
-| `--duration` | Optional simulated duration, a whole number of `dt` intervals |
-| `--record` | New JSONL output path |
-
-Zero angle points vertically downward. The state order is `[theta, omega]`,
-time is in seconds, and the input vector is `[torque]` in N m.
-
-## Send commands from another process
-
-With the simulator running, start the HTTP controller example in a second
-terminal:
-
-```shell
-pdm run python examples/pendulum_sil_controller.py
-```
-
-The controller submits a sequence of torque commands and waits until each is
-reported as applied. Its timing is based on simulated time. After it exits,
-the last applied torque remains active indefinitely until another valid
-command arrives.
-
-## Record and replay
-
-```shell
-pdm run python -m bs_simulators --duration 15 --record pendulum-run.jsonl
-```
-
-The recording contains the initial snapshot, one snapshot per completed
-interval and a terminal snapshot. The terminal entry may repeat the last
-physical time and sequence; it does not represent an extra integration step.
-The command preserves existing files and closes the HTTP service when the
-run ends.
-
-After the experiment, export a replay:
-
-```shell
-pdm sync -G dev -G replay
-pdm run python examples/pendulum_sil_replay.py pendulum-run.jsonl --output pendulum-run.gif
-```
-
-The replay filters repeated terminal timestamps and passes the recorded angle
-trajectory to `benchmark_systems.animations.Pendulum` and `AutoAnimation`.
-Pillow writes the GIF. Replay is independent of the live HTTP service.
-
-## Access signals directly from Python
-
-`InMemoryAdapter` provides the same input and measurement interface without
-HTTP requests:
+## Construct the simulator
 
 ```python
 import time
-from bs_simulators import InMemoryAdapter, create_pendulum
+import numpy as np
 
-simulation = create_pendulum(active_controller="python", theta0=0.6)
-adapter = InMemoryAdapter(simulation, controller_id="python")
-adapter.write_signals({"torque": 2.0})
-simulation.start(duration=1.0)
-try:
-    while adapter.read_snapshot()["status"] == "running":
-        time.sleep(0.02)
-    print(adapter.read_measurements())
-finally:
-    simulation.stop()
+from benchmark_systems.models import pendulum
+from bs_simulators import Simulation, SignalDescriptor
+
+simulation = Simulation(
+    pendulum,
+    x0=[np.pi - 0.25, 0.0],
+    u0=[0.0],
+    parameters={"m": 1.0, "L": 1.0, "drag": 0.1},
+    dt=0.01,
+    state_signals=[
+        SignalDescriptor("theta", "rad", "float64", "output"),
+        SignalDescriptor("omega", "rad/s", "float64", "output"),
+    ],
+    input_signals=[SignalDescriptor("torque", "N m", "float64", "input")],
+    active_controller="python",
+    viewer="pendulum",
+)
 ```
 
-The matching controller identities authorize this adapter's writes. The
-command is accepted before the worker starts, then applied at an integration
-boundary. The loop waits for this one-second experiment to finish before
-reading its final measurements. `stop()` also ensures cleanup if the
-experiment is interrupted.
+`pendulum` supplies the equations. Its state is `x=[theta, omega]` and its
+input is `u=[torque]`. We will choose an initial angle of `pi - 0.25` rad,
+close to the upright position, with zero angular velocity and torque. Zero
+angle is the downward position. `m`, `L` and `drag` specify mass, length and
+viscous damping.
 
-The available named signals are:
+`dt=0.01` sets the integration interval in simulated seconds. Omitting
+`stepper` creates a fresh `ODEStepper(method="RK45")`; SciPy chooses its
+internal integration steps. The signal descriptors name each vector
+component and specify its units. `active_controller` selects who may write
+inputs; `viewer` selects a compatible scene for optional HTTP observation.
+Construction initializes the numerical state without starting a thread.
 
-| Signal | Meaning | Unit | Direction |
-| --- | --- | --- | --- |
-| `theta` | Pendulum angle | rad | output |
-| `omega` | Angular velocity | rad/s | output |
-| `torque` | Applied torque | N m | input, also readable |
-| `time` | Simulated time | s | output |
-| `status` | Execution status | none | output |
+## Inspect the object
 
-`describe_signals()` returns names, units, types, directions and optional
-bounds. `read_measurements()` returns values under these names, while
-`read_snapshot()` includes execution and command metadata. Named writes must
-contain the complete set of input signals: currently `{"torque": value}`.
-The equivalent vector write is `write_inputs([value])`.
-
-For a longer named-signal example with optional browser observation:
-
-```shell
-pdm run python examples/pendulum_signal_adapter.py --port 8766
+```python
+simulation.parameters
+simulation.describe_signals()
+simulation.read_measurements()
+simulation.snapshot()
 ```
 
-This selects `plc-demo` as its controller identity. The browser can observe
-the experiment, while HTTP input writes are rejected. The example is an
-in-process Python bridge demonstration, not a connection to a physical PLC.
+`parameters` returns the physical settings. `describe_signals()` describes
+the ordered state and input components. `read_measurements()` returns the
+named sensor readings `theta` and `omega`, the applied `torque`, and `time`
+and `status`. Use these readings as controller feedback. `snapshot()` gives
+the model state before sensor limits, the applied input vector and command
+metadata for inspection. This example leaves the sensors unbounded, so the
+state readings match the model values when both calls observe the same step.
+See {ref}`simulation snapshots and sensor measurements <snapshot-and-measurements>`.
 
-## Select the controller
+## Connect a controller adapter
 
-Set `active_controller` when creating the simulation, or call
-`configure_controller(controller_id)` before starting it. Switching the
-controller while the engine is ready clears commands pending from the
-previous controller. Controller selection is fixed during a run.
+```python
+from bs_simulators import InMemoryAdapter
 
-An adapter's `controller_id` must match that selection. The HTTP adapter
-always identifies as `http`; its request body cannot choose a different
-identity. Thus `active_controller="python"` permits Python adapter writes
-and browser observation, while rejecting HTTP writes. These identifiers
-provide local ownership arbitration, not device authentication.
+controller = InMemoryAdapter(simulation, controller_id="python")
+controller.read_measurements()
+```
 
-## Distinguish acceptance from application
+The adapter uses the simulation's `SimulationPort` methods. It reads the
+same named measurements and supplies `controller_id="python"` with each
+write, matching the selected controller. It does not own the worker or its
+clock. We will use this adapter in the scan loop below.
 
-Each valid command receives a sequence number and local monotonic receipt
-time. The acknowledgement confirms acceptance without waiting for the
-integration worker. The latest pending vector is selected at an interval
-boundary and held constant throughout that interval. A command arriving
-during the interval affects a later interval. Several pending writes may
-coalesce into the most recent command.
+## Add an optional browser viewer
 
-Compare an acknowledgement's `accepted_input_seq` with a snapshot's
-`input_seq` to observe application. `pending_input_seq` identifies a pending
-or in-flight command, and `applied_at_sim_time` identifies the applied
-command's simulation-time boundary. `received_input_seq` reports the most
-recently accepted command separately.
+```python
+import threading
+from bs_simulators.comms.http import create_server
 
-An optional `source_timestamp` is an ISO 8601 UTC timestamp using `Z` or a
-zero UTC offset. It is diagnostic metadata: it neither schedules a command
-nor changes local sequence order. Local receipt timing uses a monotonic clock.
-Sending the same torque again is a new valid receipt. Invalid commands leave
-the accepted input and receipt metadata unchanged.
+server = create_server(simulation, port=0)
+server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+server_thread.start()
+viewer_url = f"http://127.0.0.1:{server.server_address[1]}/"
+print(viewer_url)
+```
 
-## HTTP endpoints
+We will open the printed address before running the control loop. `port=0`
+asks the operating system for an available local port. The server observes
+the existing `simulation` object; it does not construct another simulator or
+advance time. The browser initially displays the initial state. Python
+remains the selected controller, so this HTTP connection is for observation.
+This section can be skipped when running only the core.
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /` | Packaged pendulum viewer |
-| `GET /api/signals` | Signal descriptions |
-| `GET /api/state` | Latest detached snapshot |
-| `POST /api/input` | Submit `{"u": [2.0]}` with optional `source_timestamp` |
+## Run a scan loop
 
-A successful POST returns HTTP 202 and an acceptance acknowledgement. The
-snapshot contains `t`, `x`, `u`, execution `status`, `active_controller`,
-command sequences and timing information. Applied command metadata uses
-`controller_id` and `source_timestamp`; the most recent receipt has separate
-`received_*` fields. The server listens on loopback for local experiments.
+```python
+scan_period = 0.05
+kp, kd = 20.0, 4.0
+reference = np.pi
+previous_error = 0.0
 
-## Timing and current scope
+simulation.start()
+for _ in range(100):
+    measurements = controller.read_measurements()
+    error = reference - measurements["theta"]
+    error_rate = (error - previous_error) / scan_period
+    previous_error = error
+    torque = kp * error + kd * error_rate
+    controller.write_inputs([torque])
+    time.sleep(scan_period)
+simulation.stop()
+```
 
-The worker aims to advance one simulated second per wall-clock second using
-a monotonic clock. SciPy takes internal solver steps within each fixed `dt`
-interval. If computation falls behind, physical intervals are preserved and
-the snapshot's `lag` increases; this is soft real time, without guaranteed
-deadlines.
+`start()` launches the independent simulation worker and returns immediately.
+Each scan reads the latest committed measurements, computes a PD torque and
+submits a complete input vector through `controller.write_inputs([torque])`.
+The adapter delegates that write to `Simulation.submit_input()` with its
+controller identity. Direct Python code can alternatively use
+`simulation.set_input([torque])` for the selected controller. `kp` acts on
+the angular error and `kd` acts on its finite-difference derivative. We will
+use `pi` radians as the upright reference.
 
-Communication adapters perform their network work outside the physics worker.
-JSONL recording currently writes from that worker, so slow storage can add
-lag. This configuration provides the pendulum ODE, a local HTTP interface and a
-two-dimensional Canvas scene. The [generic engine](simulation.md) also accepts
-other ODE models and index-1 DAEs through an explicitly selected stepper.
-Industrial bridges, higher-index DAE initialization, persistent CasADi
-integration, pause/reset and 3D scenes are not implemented.
+The worker integrates at `dt=0.01` s while the controller waits approximately
+`0.05` s between commands. The last input is held between commands, including
+when the controller takes longer than expected. A new command is applied at
+an integration boundary; accepting it does not mean it has already affected
+the state. The [runtime sequence diagram](api.md#runtime-sequence) shows
+these separate operations.
+
+After 100 scans, `stop()` requests shutdown and waits for the worker. The
+sleep is an approximate scan delay; loop execution adds to the scan period.
+For a finite experiment without a controller loop, use
+`start(duration=5.0)` followed by `wait()` instead.
+
+## Inspect the final state and close the viewer
+
+```python
+simulation.read_measurements()
+simulation.snapshot()
+```
+
+The stopped object remains available for inspection. In a snapshot, `t` is
+the committed simulated time, `x` is the state vector and `u` is the applied
+input. `input_seq` identifies the command used by the latest committed state.
+Create a fresh `Simulation` to repeat the experiment.
+
+If the optional HTTP server was started, close it after inspecting the final
+state:
+
+```python
+server.shutdown()
+server.server_close()
+server_thread.join()
+```
+
+Stopping the simulation leaves the HTTP server available to show its final
+state until this shutdown. The server retains the simulation object passed
+to `create_server()`.
+
+## Continue with the core
+
+[Simulation and steppers](simulation.md) explains model signatures, named
+signals and ODE/DAE integration. [Architecture](architecture.md) explains how
+controllers and adapters use the same runtime through Python protocols.

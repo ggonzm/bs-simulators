@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" data-viewer="neutralization">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pH neutralization</title>
+<link rel="stylesheet" href="/assets/viewer.css">
+<h1>pH neutralization</h1>
+<canvas id="scene" aria-label="Neutralization reactor with liquid level and pH gauges"></canvas>
+<p id="time">t = — s</p>
+<p id="status" role="status">Connecting to the simulator…</p>
+<details>
+ <summary>Simulation data</summary>
+ <dl>
+  <dt>State</dt><dd id="motion">—</dd>
+  <dt>Instrument scales</dt><dd id="scales">—</dd>
+  <dt>Applied input</dt><dd id="input">—</dd>
+  <dt>Parameters</dt><dd id="parameters">—</dd>
+  <dt>Selected controller</dt><dd id="controller">—</dd>
+  <dt>Wall time / lag</dt><dd id="timing">—</dd>
+  <dt>Applied / pending sequence</dt><dd id="sequence">—</dd>
+ </dl>
+ <p id="error" role="alert"></p>
+</details>
+<script type="module" src="/assets/viewer.js"></script>
+</html>

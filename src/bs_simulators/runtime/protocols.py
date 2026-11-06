@@ -25,7 +25,8 @@ class SimulationPort(Protocol):
         dict[str, Any]
             Model-specific state and execution metadata. The pendulum includes
             simulated time ``t``, state vector ``x``, applied input ``u``, and
-            execution ``status``. Its sequence fields distinguish accepted,
+            execution ``status``. ``Simulation`` also reports ``input_saturated``,
+            with one flag per applied input. Its sequence fields distinguish accepted,
             pending, and applied inputs. Transport adapters pass this data
             through without assuming a particular state-vector layout.
 
@@ -46,7 +47,8 @@ class SimulationPort(Protocol):
             Named values corresponding to the signals described by
             ``describe_signals()``. For the pendulum these are ``theta``,
             ``omega``, ``torque``, ``time``, and ``status``. Readable inputs
-            report the applied value, rather than a pending command.
+            report the applied value. ``Simulation`` clips state measurements
+            at configured sensor limits and exposes the model state in ``snapshot()``.
 
         Notes
         -----
@@ -86,6 +88,7 @@ class SimulationPort(Protocol):
         u : Sequence[float]
             Complete finite input vector, ordered as the input signals from
             ``describe_signals()``. For the pendulum this is ``[torque]``.
+            ``Simulation`` clips finite requests to configured actuator limits.
         controller_id : str
             Identity of the submitting controller. It must match the engine's
             explicitly selected active controller; it is not authentication.

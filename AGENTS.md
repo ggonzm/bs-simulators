@@ -16,7 +16,8 @@
 
 ## Package Boundaries
 - Source lives under `src/bs_simulators`; examples consume the package.
-- `runtime` exposes one model-independent Simulation. Numerical integration belongs to ODEStepper or DAEStepper through the structural Stepper protocol. Omitting stepper creates a fresh RK45 ODE stepper per run; DAE selection remains explicit. Presets configure models without subclassing Simulation. It owns the clock, ZOH, controller selection and signal descriptions. It must not import `comms` or `viewers`.
+- `runtime` exposes one model-independent Simulation. Numerical integration belongs to ODEStepper or DAEStepper through the structural Stepper protocol. Omitting stepper creates a fresh RK45 ODE stepper per run; DAE selection remains explicit. Optional catalogue TOML data configures models without subclassing Simulation. Users can override physical parameters and initial data for every run. It owns the clock, ZOH, controller selection and signal descriptions. It must not import `comms` or `viewers`.
+- `cli` owns the Typer terminal application and execution lifecycle. Expose model-independent options only: x0/u0 are complete vectors and physical parameters use repeated --parameter; do not add model-specific flags. Keep runtime imports lazy so --help does not initialize scientific or HTTP components.
 - `comms` owns transport adapters and HTTP. Network I/O must stay outside the physics worker.
 - `viewers` owns packaged browser assets. Load them with `importlib.resources`, not a checkout-relative path.
 - Import models and offline animations from `benchmark-systems`; never copy their implementation into this package.
@@ -25,9 +26,12 @@
 - OPC UA and Modbus are future bridges; do not claim physical PLC validation until it exists.
 
 ## Verification
+- Keep docs/ focused on final-user guides and API reference; remove partial reports instead of adding session history.
+- Install docs tooling with pdm sync -G dev -G docs. Build with pdm run docs-build, execute examples with pdm run docs-test, and preview with pdm run docs-serve.
+- After documentation dependency changes, regenerate docs/requirements.txt with pdm export --no-default -G docs --without-hashes -o docs/requirements.txt. Keep all documentation output under ignored docs/_build/.
 - Write public Markdown documentation and notebook explanations in English for end users. Keep conversation notes and implementation-session history out of public guides.
 - Run `pdm run pytest` and `pdm run python -c "import bs_simulators; import bs_simulators.runtime"`.
 - Preserve evidence for ZOH, interval boundaries, controller ownership, indefinite input retention and monotonic receipt timestamps, independent structural engines, real subprocess HTTP and viewer resource loading.
-- Build a wheel and sdist with PDM; verify the wheel contains `viewers/pendulum.html` and test imports/HTTP from an installed wheel outside the source checkout.
+- Build a wheel and sdist with PDM; verify the wheel contains `viewers/pendulum.html` and catalogue TOML resources and test imports/HTTP from an installed wheel outside the source checkout.
 - For visual changes, provide a preview and preserve the simple Matplotlib-style scene.
 - Keep public exports and runtime/package versions synchronized. Validate non-pendulum models, multi-input/zero-input plants, nonzero initial time, and atomic ODE/DAE failures. DAE consistency currently supports index at most one; fixed_x identifies states preserved during input-boundary corrections.

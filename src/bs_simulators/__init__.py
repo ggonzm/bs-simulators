@@ -10,15 +10,19 @@ from importlib import import_module
 __version__ = '0.1.0'
 
 __all__ = ['Simulation', 'Stepper', 'ODEStepper', 'DAEStepper',
-           'create_pendulum', 'InMemoryAdapter', 'SimulationPort',
-           'SignalDescriptor', '__version__']
+           'InMemoryAdapter', 'SimulationPort',
+           'SignalDescriptor', 'SimulationConfiguration', 'list_configurations',
+           'load_configuration', 'load_configuration_file', '__version__']
 
 _EXPORTS = {
+    'SimulationConfiguration': '.catalogue',
+    'list_configurations': '.catalogue',
+    'load_configuration': '.catalogue',
+    'load_configuration_file': '.catalogue',
     'Simulation': '.runtime.core',
     'Stepper': '.runtime.protocols',
     'ODEStepper': '.runtime.steppers',
     'DAEStepper': '.runtime.steppers',
-    'create_pendulum': '.presets',
     'InMemoryAdapter': '.comms.adapters',
     'SimulationPort': '.runtime.protocols',
     'SignalDescriptor': '.runtime.signals',
@@ -26,6 +30,7 @@ _EXPORTS = {
 
 
 def __getattr__(name):
+    """Load and cache a public export on first access, keeping imports lazy."""
     module_name = _EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
@@ -35,4 +40,5 @@ def __getattr__(name):
 
 
 def __dir__():
+    """Include lazy public exports in interactive attribute discovery."""
     return sorted(set(globals()) | set(__all__))

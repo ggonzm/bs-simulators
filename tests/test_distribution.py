@@ -29,7 +29,8 @@ def test_runtime_version_matches_new_distribution():
 def test_viewer_is_a_package_resource():
     content = files('bs_simulators.viewers').joinpath('pendulum.html').read_text(encoding='utf-8')
     assert '<html' in content.lower()
-    assert '/api/state' in content
+    assert '/assets/viewer.js' in content
+    assert '/api/state' in files('bs_simulators.viewers').joinpath('viewer.js').read_text(encoding='utf-8')
 
 
 def test_runtime_import_does_not_load_communications_or_viewers():
@@ -55,6 +56,15 @@ def test_built_wheel_contains_viewer_and_external_core_requirement():
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert 'bs_simulators/viewers/pendulum.html' in names
+        for name, model in [('pendulum', 'pendulum'), ('dc-motor', 'dc_motor'), ('neutralization', 'neutralization')]:
+            assert f'bs_simulators/viewers/{name}.html' in names
+            resource = f'bs_simulators/catalogue/{name}.toml'
+            assert resource in names
+            configuration = tomllib.loads(archive.read(resource).decode('utf-8'))
+            assert configuration['model'] == model
+            assert {'parameters', 'x0', 'u0'} <= configuration.keys()
+        for asset in ('viewer.js', 'scenes.js', 'viewer.css'):
+            assert f'bs_simulators/viewers/{asset}' in names
         assert not any(name.startswith('benchmark_systems/') for name in names)
         metadata_path = next(name for name in names if name.endswith('.dist-info/METADATA'))
         metadata = Parser().parsestr(archive.read(metadata_path).decode('utf-8'))
