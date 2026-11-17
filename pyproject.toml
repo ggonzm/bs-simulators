@@ -11,6 +11,8 @@ dependencies = [
     "scipy>=1.14.1",
     "solve-dae>=0.2.4",
     "typer>=0.27.3",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]

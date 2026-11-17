@@ -300,12 +300,50 @@ def test_http_uses_structural_port_instead_of_concrete_pendulum():
         with urlopen(base + '/assets/viewer.js', timeout=2) as response:
             assert response.headers.get_content_type() == 'text/javascript'
             assert b'/api/state' in response.read()
+        with urlopen(base + '/openapi.json', timeout=2) as response:
+            endpoints = json.load(response)['paths']
+            assert '202' in endpoints['/api/input']['post']['responses']
         request = Request(base + '/api/input', data=b'{"u":[0.9]}',
                           headers={'Content-Type': 'application/json'})
         with urlopen(request, timeout=2) as response:
             assert response.status == 202
         assert plant.calls[-1]['controller_id'] == 'http'
         assert plant.calls[-1]['u'] == [0.9]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_colab_listener_serves_viewer_without_exposing_control():
+    plant = _StructuralPlant()
+    proxy_host = 'notebook-port.example.test'
+    proxy_origin = f'https://{proxy_host}'
+    server = create_server(plant, port=0, viewer='pendulum', colab_origin=proxy_origin)
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    proxy_headers = {'Host': proxy_host, 'Origin': proxy_origin}
+    try:
+        for path in ('/', '/assets/viewer.js', '/api/state', '/api/signals'):
+            with urlopen(Request(base + path, headers=proxy_headers), timeout=2) as response:
+                assert response.status == 200
+
+        for headers in (proxy_headers, {}):
+            request = Request(base + '/api/input', data=b'{"u":[0.9]}',
+                              headers={**headers, 'Content-Type': 'application/json'})
+            with pytest.raises(HTTPError) as rejected:
+                urlopen(request, timeout=2)
+            assert rejected.value.code == 405
+            rejected.value.close()
+
+        for headers in ({'Host': 'unexpected.example.test'},
+                        {**proxy_headers, 'Origin': 'https://unexpected.example.test'}):
+            with pytest.raises(HTTPError) as rejected:
+                urlopen(Request(base + '/api/state', headers=headers), timeout=2)
+            assert rejected.value.code == 403
+            rejected.value.close()
+        assert plant.calls == []
     finally:
         server.shutdown()
         server.server_close()

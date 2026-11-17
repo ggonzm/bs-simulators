@@ -1,8 +1,8 @@
 # HTTP observation and control
 
 The local HTTP interface observes a simulation independently of its physics
-worker. The current server listens on loopback and uses Python's standard
-library. The browser polls the latest state approximately every 50 ms.
+worker. FastAPI runs on Uvicorn and listens on loopback. The browser polls
+the latest state approximately every 50 ms.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -12,6 +12,7 @@ library. The browser polls the latest state approximately every 50 ms.
 | `POST /api/input` | Submit a complete input vector |
 | `GET /` | Configured browser scene, if available |
 | `GET /assets/...` | Registered shared viewer scripts and styles |
+| `GET /docs` | Interactive API documentation for the local server |
 
 A request body such as `{"u": [2.0]}` submits a torque command to the pendulum.
 An optional `source_timestamp` must be an ISO 8601 UTC timestamp; it records
@@ -79,3 +80,27 @@ the simulation clock.
 The [adapter interaction diagram](api.md#runtime-sequence) shows the path
 from a write request to a committed state. For terminal execution, the
 optional [CLI](catalogue.md) accepts `--controller http` to select HTTP input.
+
+## Open the viewer in Google Colab
+
+Colab routes the iframe through an HTTPS proxy. Start a read-only server
+for the viewer using the exact proxy origin returned by the notebook.
+With the `simulation` from the example above, replace its HTTP startup
+lines with the following cell. Use a free port in the Colab runtime.
+
+```python
+from google.colab import output
+
+port = 8766
+proxy_origin = output.eval_js(f"google.colab.kernel.proxyPort({port})")
+server = create_server(simulation, port=port, colab_origin=proxy_origin)
+server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+server_thread.start()
+simulation.start()
+output.serve_kernel_port_as_iframe(port, height=650)
+```
+
+The iframe can read the simulation and render the scene. If an HTTP SIL
+controller runs in the same runtime, start a separate default server on
+another loopback port and point the controller there. Use the shutdown
+sequence above for each server you start.
