@@ -1,0 +1,78 @@
+name = "johansson"
+model = "johansson"
+x0 = [10.0, 10.0, 10.0, 10.0]
+u0 = [50, 50, 0.5, 0.5]
+dt = 0.3
+active_controller = "python"
+viewer = "johansson"
+
+[parameters]
+A = [389.16, 389.16, 389.16, 389.16]
+a = [1.5393804002589984, 1.5393804002589984, 1.5393804002589984, 1.5393804002589984]
+K = [6.74, 7.94]
+h_max = [25.0, 25.0, 20.0, 20.0]
+
+[input_groups]
+u = [0, 1]
+gamma = [2, 3]
+
+[stepper]
+kind = "ode"
+method = "RK45"
+rtol = 1e-6
+
+[[state_signals]]
+name = "h1"
+unit = "cm"
+dtype = "float64"
+direction = "output"
+
+[[state_signals]]
+name = "h2"
+unit = "cm"
+dtype = "float64"
+direction = "output"
+
+[[state_signals]]
+name = "h3"
+unit = "cm"
+dtype = "float64"
+direction = "output"
+
+[[state_signals]]
+name = "h4"
+unit = "cm"
+dtype = "float64"
+direction = "output"
+
+[[input_signals]]
+name = "u1"
+unit = "%"
+dtype = "float64"
+direction = "input"
+lower = 0.0
+upper = 100.0
+
+[[input_signals]]
+name = "u2"
+unit = "%"
+dtype = "float64"
+direction = "input"
+lower = 0.0
+upper = 100.0
+
+[[input_signals]]
+name = "gamma1"
+unit = ""
+dtype = "float64"
+direction = "input"
+lower = 0.0
+upper = 1.0
+
+[[input_signals]]
+name = "gamma2"
+unit = ""
+dtype = "float64"
+direction = "input"
+lower = 0.0
+upper = 1.0

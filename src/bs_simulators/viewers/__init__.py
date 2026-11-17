@@ -4,6 +4,7 @@ VIEWER_FILES = {
     'pendulum': 'pendulum.html',
     'dc-motor': 'dc-motor.html',
     'neutralization': 'neutralization.html',
+    'johansson': 'johansson.html',
 }
 
 ASSET_FILES = {

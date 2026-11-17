@@ -70,10 +70,14 @@ def _documentation(model):
     return text
 
 
-def show_description(model, parameters, *, initial, held, dt, t0, controller, stepper, viewer):
+def show_description(model, parameters, *, initial, held, dt, t0, controller, stepper, viewer,
+                     input_groups=None, input_signals=None):
     """Render model signature, parameter choices, run settings and complete documentation."""
+    input_keywords = input_groups.keys() if input_groups is not None else {'u'}
+    if input_groups is not None and (duplicates := parameters.keys() & input_keywords):
+        raise ValueError(f'use the input vector for {model.__name__}: {sorted(duplicates)}')
     physical = {name: parameter for name, parameter in inspect.signature(model).parameters.items()
-                if parameter.kind is inspect.Parameter.KEYWORD_ONLY and name != 'u'}
+                if parameter.kind is inspect.Parameter.KEYWORD_ONLY and name not in input_keywords}
     unknown = parameters.keys() - physical.keys()
     if unknown:
         raise ValueError(f'unknown parameters for {model.__name__}: {sorted(unknown)}')
@@ -104,6 +108,8 @@ def show_description(model, parameters, *, initial, held, dt, t0, controller, st
     ]
     for label, value in values:
         _row(settings, label, value)
+    if input_signals is not None:
+        _row(settings, 'Input vector order', ', '.join(signal['name'] for signal in input_signals))
     console.print(settings)
     console.print(Panel(_documentation(model), title='Model documentation', border_style='blue'))
 

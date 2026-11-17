@@ -25,7 +25,8 @@ After installation, launch the bundled pendulum and open
 bs-simulators --catalogue pendulum
 ```
 
-The catalogue also includes a DC motor and a pH neutralization process.
+The catalogue also includes a DC motor, a pH neutralization process, and the
+Johansson four-tank process.
 Use `bs-simulators --list-catalogue` to see the available configurations.
 
 ## Run a simulation from Python

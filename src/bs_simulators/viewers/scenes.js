@@ -49,8 +49,8 @@ function plot(canvas,xmin,xmax,ymin,ymax,padding=12){
   c.beginPath();c.roundRect(X(x),Y(y+h0),w0*scale,h0*scale,r*scale);
   if(fill){c.fillStyle=fill;c.fill();}if(stroke){c.strokeStyle=stroke;c.lineWidth=lw;c.stroke();}
  };
- const arrow=(x1,y1,x2,y2,color='#444')=>{
-  line(x1,y1,x2,y2,color,1.5);const a=Math.atan2(y2-y1,x2-x1),r=.12;
+ const arrow=(x1,y1,x2,y2,color='#444',r=.12)=>{
+  line(x1,y1,x2,y2,color,1.5);const a=Math.atan2(y2-y1,x2-x1);
   line(x2,y2,x2-r*Math.cos(a-.45),y2-r*Math.sin(a-.45),color,1.5);
   line(x2,y2,x2-r*Math.cos(a+.45),y2-r*Math.sin(a+.45),color,1.5);
  };
@@ -136,8 +136,108 @@ function neutralization(canvas,state,signals={outputs:[]}){
  return [{label:'pH',range:phRange},{label:'h (cm)',range:heightRange}];
 }
 
+function johanssonPump({c, X, Y, scale, arrow, circle}, x, y) {
+ const radius = .30;
+ const tip = 40 * Math.PI / 180;
+ const tail = tip + .4;
+ const arrowRadius = radius * .52;
+ circle(x, y, radius, '#e8e8e8', '#555', 1.4);
+ c.beginPath();
+ c.arc(X(x), Y(y), arrowRadius * scale, -310 * Math.PI / 180, -tip);
+ c.strokeStyle = '#555';
+ c.lineWidth = 1.2;
+ c.stroke();
+ arrow(x + arrowRadius * Math.cos(tail), y + arrowRadius * Math.sin(tail),
+       x + arrowRadius * Math.cos(tip), y + arrowRadius * Math.sin(tip), '#555', .065);
+}
+
+function johanssonValve({c, X, Y, circle}, x, y, side) {
+ const size = .24;
+ const halfBase = size * .85;
+ for (const [[x1, y1], [x2, y2]] of [
+  [[-halfBase, -size], [halfBase, -size]],
+  [[side * size, halfBase], [side * size, -halfBase]],
+  [[-halfBase, size], [halfBase, size]],
+ ]) {
+  c.beginPath();
+  c.moveTo(X(x), Y(y));
+  c.lineTo(X(x + x1), Y(y + y1));
+  c.lineTo(X(x + x2), Y(y + y2));
+  c.closePath();
+  c.fillStyle = '#cc3333';
+  c.strokeStyle = '#111';
+  c.lineWidth = 1;
+  c.fill();
+  c.stroke();
+ }
+ circle(x, y, .035, '#111');
+}
+
+function johansson(canvas, state) {
+ const plotter = plot(canvas, -1.6, 11.6, 0, 11.35);
+ const {arrow, line, rect, text} = plotter;
+ const heights = state?.x ?? [];
+ const pumps = state?.u ?? [];
+ const gammas = pumps.slice(2, 4);
+ const capacity = state?.parameters?.h_max ?? [25, 25, 20, 20];
+ const centres = [2.8, 7.2];
+ const tankWidth = 2.6;
+ const lowerBase = 1.5, lowerTop = 4.3, upperBase = 6.6, upperTop = 9;
+ const pumpY = 2.65, valveY = 4.95, sumpY = .75;
+ const blue = '#0044bb';
+
+ const ranges = capacity.map((limit, index) =>
+  ({label: `h${index + 1} (cm)`, range: [0, limit]}));
+
+ for (const [index, cx] of [...centres, ...centres].entries()) {
+  const base = index < 2 ? lowerBase : upperBase;
+  const top = index < 2 ? lowerTop : upperTop;
+  const left = cx - tankWidth / 2;
+  const height = heights[index];
+  if (Number.isFinite(height)) {
+   const fill = (top - base) * scaleFraction(height, ranges[index].range);
+   rect(left, base, tankWidth, fill, '#b8d4ee');
+  }
+  rect(left, base, tankWidth, top - base, null, '#223344', 0, 1.8);
+  text(`h${index + 1}`, cx, (top + base) / 2 + .23, 12, '#223344', 'center', true);
+  text(`${fmt(heights[index], 1)} cm`, cx, (top + base) / 2 - .21, 12);
+ }
+
+ line(.55, sumpY, 9.45, sumpY);
+ for (const [index, cx] of centres.entries()) {
+  const inletX = index === 0 ? .55 : 9.45;
+  const sign = index === 0 ? 1 : -1;
+  const feedX = cx - .8 * sign;
+  const crossedX = centres[1 - index];
+  const crossY = index === 0 ? 10.65 : 10.1;
+  const pump = pumps[index], gamma = gammas[index];
+
+  line(cx, lowerBase, cx, sumpY);
+  arrow(cx, upperBase, cx, lowerTop);
+  line(inletX, sumpY, inletX, crossY);
+  line(inletX, valveY, feedX, valveY);
+  arrow(feedX, valveY, feedX, lowerTop);
+  if (index === 0) {
+   line(inletX, crossY, crossedX, crossY);
+  } else {
+   // Leave a gap where this feed crosses pump 1's vertical branch.
+   line(inletX, crossY, centres[1] + .12, crossY);
+   line(centres[1] - .12, crossY, crossedX, crossY);
+  }
+  arrow(crossedX, crossY, crossedX, upperTop);
+  johanssonPump(plotter, inletX, pumpY);
+  johanssonValve(plotter, inletX, valveY, sign);
+  text(`u${index + 1}  ${fmt(pump, 1)}%`, inletX - .98 * sign, pumpY, 12, blue);
+  text(`γ${index + 1}  ${fmt(gamma)}`, inletX - .98 * sign, valveY, 12, blue);
+  text(`${fmt((1 - gamma) * pump, 1)}%`, (inletX + feedX) / 2, valveY + .28, 11);
+  text(`${fmt(gamma * pump, 1)}%`, inletX - .48 * sign, 7.6, 11);
+ }
+ return ranges;
+}
+
 export const scenes={
  pendulum:{states:2,aspect:'1 / 1',draw:pendulum},
  'dc-motor':{states:3,aspect:'5 / 3',draw:motor,observe(s){omegaMax=Math.max(omegaMax,Math.abs(s.x[1]));currentMax=Math.max(currentMax,Math.abs(s.x[2]));},reset(){omegaMax=1e-3;currentMax=1e-3;}},
- neutralization:{states:4,aspect:'8.2 / 9.5',draw:neutralization}
+ neutralization:{states:4,aspect:'8.2 / 9.5',draw:neutralization},
+ johansson:{states:4,aspect:'13.2 / 11.35',draw:johansson}
 };

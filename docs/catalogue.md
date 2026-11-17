@@ -84,6 +84,7 @@ The bundled entries are:
 | `pendulum` | `pendulum` | angle, angular velocity | torque | Pendulum Canvas |
 | `dc-motor` | `dc_motor` | angle, angular velocity, current | voltage | Motor shaft and indicators |
 | `neutralization` | `neutralization` (DAE) | Wa4, Wb4, height, pH | alkaline feed q3 | Reactor, level and pH gauges |
+| `johansson` | `johansson` | Four tank heights | Two pump setpoints and two valve fractions | Tanks, crossed feeds and drainage |
 
 Each entry includes a browser scene following its Matplotlib counterpart in
 `benchmark-systems`. State and named signals remain available through
@@ -100,7 +101,7 @@ vectors; `--dt` and `--controller` override their configuration values.
 ```{doctest}
 >>> from bs_simulators.catalogue import list_configurations, load_configuration
 >>> list_configurations()
-['dc-motor', 'neutralization', 'pendulum']
+['dc-motor', 'johansson', 'neutralization', 'pendulum']
 >>> configuration = load_configuration("pendulum")
 >>> configuration.parameters["m"]
 1.0
@@ -228,12 +229,13 @@ and the recording path when requested. Worker failures appear in an error
 panel and return a nonzero exit code. Usage errors retain the standard
 Typer error presentation.
 
-## Three bundled experiments
+## Bundled experiments
 
 ```shell
 pdm run bs-simulators --catalogue pendulum
 pdm run bs-simulators --catalogue dc-motor
 pdm run bs-simulators --catalogue neutralization
+pdm run bs-simulators --catalogue johansson
 ```
 
 Run one command at a time and open the displayed viewer address. Use distinct
@@ -275,6 +277,42 @@ and controlled alkaline feed `u=[15.6]`. The numerical model's flow docstrings
 say L/s, whereas its reference experiment and Matplotlib viewer use raw
 cm³/s values. No conversion is performed by this package. Keep the chosen
 flow and geometry units consistent when overriding these parameters.
+
+### Johansson four-tank process
+
+The configuration starts with all four tanks at 10 cm and uses a step of
+0.3 simulated seconds. The initial pump commands come from the first sample
+in the reference animation. The input vector is `[u1, u2, gamma1, gamma2]`.
+Pump setpoints are percentages from 0 to 100. Valve fractions range from
+0 to 1 and start at 0.7 and 0.6. The states `[h1, h2, h3, h4]` are measured
+in centimetres.
+
+```shell
+bs-simulators --catalogue johansson --u0 "[30, 60, 0.7, 0.6]"
+```
+
+Send the complete vector when changing a valve during a run. For example,
+`{"u": [30, 60, 0.2, 0.8]}` keeps the two pump setpoints and changes both
+valves. The catalogue uses the following TOML table to pass the four inputs
+to the two vector arguments of the model.
+
+```toml
+[input_groups]
+u = [0, 1]
+gamma = [2, 3]
+```
+
+Each entry names a keyword-only model argument and its zero-based positions
+in the input vector. The groups cover each position exactly once. A grouped
+argument takes its value from the input vector, so set its initial
+components in `u0`.
+
+The viewer shows the lower tanks 1 and 2, the upper tanks 3 and 4, and the
+split of each applied pump command. Valve fraction `gamma1` sends a share
+of pump 1 to tank 4, and `gamma2` sends a share of pump 2 to tank 3. The
+remaining shares feed tanks 1 and 2 respectively. Tank 3 drains into tank 1,
+and tank 4 drains into tank 2. The water fills use the physical tank capacities
+from `h_max` as their scales.
 
 ## Instrument scales from signal descriptions
 

@@ -48,6 +48,7 @@ class SimulationConfiguration:
     input_signals: list[dict[str, Any]] | None = None
     stepper: dict[str, Any] | None = None
     t0: float = 0.0
+    input_groups: dict[str, list[int]] | None = None
 
     def __post_init__(self):
         """Store validated copies of configuration data without importing the simulation runtime."""
@@ -81,8 +82,15 @@ class SimulationConfiguration:
                 raise ValueError('parameter overrides must be a mapping with string keys')
             model_parameters.update(copy.deepcopy(dict(parameters)))
         signature = inspect.signature(model)
-        physical = {name: parameter for name, parameter in signature.parameters.items()
-                    if parameter.kind is inspect.Parameter.KEYWORD_ONLY and name != 'u'}
+        keywords = {name: parameter for name, parameter in signature.parameters.items()
+                    if parameter.kind is inspect.Parameter.KEYWORD_ONLY}
+        groups = configuration.input_groups
+        input_keywords = groups.keys() if groups is not None else {'u'}
+        if groups is not None and (unknown_groups := groups.keys() - keywords.keys()):
+            raise ValueError(f'unknown input groups for {configuration.model}: {sorted(unknown_groups)}')
+        if groups is not None and (duplicates := model_parameters.keys() & groups.keys()):
+            raise ValueError(f'use the input vector for {configuration.model}: {sorted(duplicates)}')
+        physical = {name: parameter for name, parameter in keywords.items() if name not in input_keywords}
         unknown = model_parameters.keys() - physical.keys()
         if unknown:
             raise ValueError(f'unknown parameters for {configuration.model}: {sorted(unknown)}')
@@ -93,6 +101,8 @@ class SimulationConfiguration:
 
         states = copy.deepcopy(configuration.x0 if x0 is None else x0)
         inputs = copy.deepcopy(configuration.u0 if u0 is None else u0)
+        if groups is not None and len(inputs) != len(configuration.u0):
+            raise ValueError(f'u0 must contain {len(configuration.u0)} inputs for {configuration.model}')
         try:
             state_size = len(states)
         except TypeError as exc:
@@ -109,6 +119,10 @@ class SimulationConfiguration:
             """Convert optional signal tables into independent runtime descriptors."""
             return None if values is None else [SignalDescriptor(**copy.deepcopy(value)) for value in values]
 
+        def map_inputs(vector):
+            """Split the held input vector into the configured model arguments."""
+            return {keyword: vector[indices] for keyword, indices in groups.items()}
+
         try:
             return Simulation(
                 model, stepper=selected_stepper, x0=states, u0=inputs,
@@ -119,6 +133,7 @@ class SimulationConfiguration:
                 viewer=configuration.viewer,
                 state_signals=descriptions(configuration.state_signals),
                 input_signals=descriptions(configuration.input_signals),
+                input_map=map_inputs if groups is not None else None,
             )
         except (TypeError, ValueError, IndexError, KeyError, ArithmeticError, RuntimeError) as exc:
             raise ValueError(f'invalid configuration {configuration.name!r}: {exc}') from exc

@@ -112,8 +112,8 @@ server.server_close()
 server_thread.join()
 ```
 
-`viewer="pendulum"`, `viewer="dc-motor"` and `viewer="neutralization"` select
-the packaged scenes for compatible model states.
+`viewer="pendulum"`, `viewer="dc-motor"`, `viewer="neutralization"` and
+`viewer="johansson"` select the packaged scenes for compatible model states.
 Other models remain fully available through API endpoints without
 requiring an animation. Reading or closing a viewer never advances or owns
 the simulation clock.

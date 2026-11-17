@@ -1,4 +1,4 @@
-"""Three complete model/viewer paths and nonlinear neutralization consistency."""
+"""Bundled model/viewer paths and nonlinear neutralization consistency."""
 
 import json
 import threading
@@ -11,7 +11,7 @@ import pytest
 from scipy.integrate import solve_ivp
 from scipy.optimize import brentq
 
-from benchmark_systems.models import neutralization
+from benchmark_systems.models import johansson, neutralization
 from bs_simulators import load_configuration, DAEStepper
 from bs_simulators.comms.http import create_server
 
@@ -53,9 +53,11 @@ def test_neutralization_matches_reduced_ode_and_independent_ph_root():
 
 @pytest.mark.parametrize('name,size,command', [
     ('pendulum', 2, [0.75]), ('dc-motor', 3, [2.0]), ('neutralization', 4, [17.0]),
+    ('johansson', 4, [30.0, 60.0, 0.2, 0.8]),
 ])
-def test_three_scenes_serve_assets_and_apply_external_inputs(name, size, command):
-    simulation = load_configuration(name).create(active_controller='http')
+def test_bundled_scenes_serve_assets_and_apply_external_inputs(name, size, command):
+    configuration = load_configuration(name)
+    simulation = configuration.create(active_controller='http')
     server = create_server(simulation, port=0)
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
     simulation.start()
@@ -95,6 +97,27 @@ def test_three_scenes_serve_assets_and_apply_external_inputs(name, size, command
             residual = neutralization(state['t'], state['x'], state['xdot'],
                                       u=state['u'][0], **state['parameters'])
             assert abs(residual[3]) < 1e-8
+        if name == 'johansson':
+            with urlopen(base + '/api/measurements', timeout=3) as response:
+                measurements = json.load(response)
+            assert [measurements['gamma1'], measurements['gamma2']] == command[2:]
+            boundary = state['applied_at_sim_time']
+            at_boundary = configuration.x0
+            if boundary > 0:
+                initial_interval = solve_ivp(
+                    lambda t, h: johansson(t, h, u=configuration.u0[:2],
+                                           gamma=configuration.u0[2:], **configuration.parameters),
+                    (0, boundary), configuration.x0, rtol=1e-10, atol=1e-12,
+                )
+                assert initial_interval.success
+                at_boundary = initial_interval.y[:, -1]
+            reference = solve_ivp(
+                lambda t, h: johansson(t, h, u=command[:2],
+                                       gamma=command[2:], **configuration.parameters),
+                (boundary, state['t']), at_boundary, rtol=1e-10, atol=1e-12,
+            )
+            assert reference.success
+            np.testing.assert_allclose(state['x'], reference.y[:, -1], rtol=1e-6)
     finally:
         simulation.stop()
         server.shutdown()

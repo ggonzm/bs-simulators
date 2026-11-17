@@ -133,7 +133,8 @@ def run(
                       t0=defaults['t0'],
                       controller=active_controller if active_controller is not None else defaults['active_controller'],
                       stepper=specification if specification is not None else defaults['stepper'],
-                      viewer=defaults['viewer'])
+                      viewer=defaults['viewer'], input_groups=defaults.get('input_groups'),
+                      input_signals=defaults.get('input_signals'))
             return
         if model is not None:
             selected = _model_function(model)

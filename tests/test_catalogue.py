@@ -1,5 +1,7 @@
 """Optional configurations preserve the model-independent simulation API."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
@@ -103,6 +105,22 @@ def test_unknown_catalogue_entry_reports_a_validation_error():
 def test_unknown_model_parameter_is_rejected_before_running():
     with pytest.raises(ValueError, match='invented|parameter|keyword'):
         load_configuration('pendulum').create(parameters={'invented': 1})
+
+
+def test_johansson_valves_are_bounded_inputs():
+    configuration = load_configuration('johansson')
+    simulation = configuration.create(u0=[30, 60, -0.2, 1.2])
+    assert simulation.snapshot()['u'] == [30, 60, 0, 1]
+    assert simulation.snapshot()['input_saturated'] == [False, False, True, True]
+    assert simulation.read_measurements()['gamma2'] == 1
+    with pytest.raises(ValueError, match='use the input vector'):
+        configuration.create(parameters={'gamma': [0.2, 0.8]})
+
+
+def test_configuration_requires_input_groups_to_cover_each_position_once():
+    configuration = load_configuration('johansson')
+    with pytest.raises(ValueError, match='each input position exactly once'):
+        replace(configuration, input_groups={'u': [0, 1], 'gamma': [1, 2]})
 
 
 def test_user_toml_can_select_a_public_model_outside_packaged_catalogue(tmp_path):

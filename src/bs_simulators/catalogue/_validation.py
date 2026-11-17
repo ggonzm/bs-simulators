@@ -8,7 +8,7 @@ import math
 
 _FIELDS = {
     'name', 'model', 'parameters', 'x0', 'u0', 'dt', 't0',
-    'active_controller', 'viewer', 'state_signals', 'input_signals', 'stepper',
+    'active_controller', 'viewer', 'state_signals', 'input_signals', 'input_groups', 'stepper',
 }
 _STEPPER_FIELDS = {'kind', 'method', 'rtol', 'atol', 'xdot0', 'fixed_x'}
 _SIGNAL_FIELDS = {'name', 'unit', 'dtype', 'direction', 'lower', 'upper'}
@@ -123,6 +123,24 @@ def _stepper_spec(value, state_size):
     return value
 
 
+def _input_groups(value, count):
+    """Map every input position exactly once to a model keyword vector."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError('input_groups must be a non-empty table')
+    groups = {}
+    for keyword, indices in value.items():
+        if (not isinstance(keyword, str) or not keyword.isidentifier()
+                or not isinstance(indices, (list, tuple)) or not indices
+                or any(type(index) is not int for index in indices)):
+            raise ValueError('input_groups must map model keyword names to non-empty integer arrays')
+        groups[keyword] = list(indices)
+    if sorted(index for indices in groups.values() for index in indices) != list(range(count)):
+        raise ValueError('input_groups must use each input position exactly once')
+    return groups
+
+
 def _configuration_values(configuration):
     """Validate configuration fields and return normalized, detached values for dataclass initialization."""
     _text('configuration name', configuration.name)
@@ -144,6 +162,7 @@ def _configuration_values(configuration):
         'parameters': _parameters(configuration.parameters), 'x0': states, 'u0': inputs,
         'dt': _number('dt', configuration.dt, positive=True), 't0': _number('t0', configuration.t0),
         'state_signals': state_signals, 'input_signals': input_signals,
+        'input_groups': _input_groups(configuration.input_groups, len(inputs)),
         'stepper': _stepper_spec(configuration.stepper, len(states)),
     }
 

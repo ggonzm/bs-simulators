@@ -56,7 +56,8 @@ def test_built_wheel_contains_viewer_and_external_core_requirement():
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert 'bs_simulators/viewers/pendulum.html' in names
-        for name, model in [('pendulum', 'pendulum'), ('dc-motor', 'dc_motor'), ('neutralization', 'neutralization')]:
+        for name, model in [('pendulum', 'pendulum'), ('dc-motor', 'dc_motor'),
+                            ('neutralization', 'neutralization'), ('johansson', 'johansson')]:
             assert f'bs_simulators/viewers/{name}.html' in names
             resource = f'bs_simulators/catalogue/{name}.toml'
             assert resource in names

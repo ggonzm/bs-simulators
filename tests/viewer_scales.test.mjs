@@ -72,3 +72,20 @@ test('neutralization honors gauge bounds while retaining the real out-of-range p
  assert.equal(JSON.stringify(state),original);
  assert.ok(surface.texts.includes('9.00'));
 });
+
+test('Johansson uses each tank capacity and shows the shares of both pumps', () => {
+ const surface = canvas();
+ const state = {x: [10, 12, 13, 14], u: [40, 60, .7, .6],
+                parameters: {h_max: [25, 27, 20, 22]}};
+ const ranges = scenes.johansson.draw(surface, state);
+ assert.deepEqual(ranges.map(({range}) => range), [[0, 25], [0, 27], [0, 20], [0, 22]]);
+ for (const label of ['10.0 cm', '12.0 cm', '13.0 cm', '14.0 cm',
+                      'u1  40.0%', 'u2  60.0%', '12.0%', '28.0%', '24.0%', '36.0%']) {
+  assert.ok(surface.texts.includes(label), label);
+ }
+ const after = canvas();
+ scenes.johansson.draw(after, {...state, u: [40, 60, .25, .75]});
+ assert.ok(after.texts.includes('γ1  0.25'));
+ assert.ok(after.texts.includes('γ2  0.75'));
+ assert.ok(after.texts.includes('10.0%') && after.texts.includes('45.0%'));
+});

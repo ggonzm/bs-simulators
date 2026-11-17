@@ -23,8 +23,9 @@ experiments once their underlying components are familiar.
 the distinction between accepted and applied commands.
 
 The runtime supports ODEs and DAE consistency of differentiation index at
-most one. Packaged browser scenes depict the pendulum, DC motor and pH neutralization
-reactor. Other models can run through Python and HTTP without a dedicated scene.
+most one. Packaged browser scenes depict the pendulum, DC motor, pH
+neutralization reactor and Johansson four-tank process. Other models can
+run through Python and HTTP without a dedicated scene.
 
 ```{toctree}
 :maxdepth: 2
