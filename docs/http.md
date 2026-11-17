@@ -37,6 +37,47 @@ limits to state readings, matching `Simulation.read_measurements()`.
 See [Common pitfalls](common-pitfalls.md) for examples of sensor and actuator
 limits and how to confirm application of a command.
 
+## Try a command from the interactive API
+
+Start the catalogue pendulum in a terminal and leave it running.
+
+```shell
+bs-simulators --catalogue pendulum --controller http
+```
+
+Open the local [interactive API](http://127.0.0.1:8765/docs), then use **Try it
+out** and **Execute** on these endpoints.
+
+1. Read `GET /api/measurements`. For the catalogue pendulum, `theta` is the
+   angle in radians, `omega` is the angular velocity in radians per second and
+   `torque` is the currently applied input in newton-metres.
+2. Send `{"u": [2.0]}` to `POST /api/input`. The complete vector contains one
+   torque command. A `202` response includes its `accepted_input_seq`.
+3. Read `GET /api/state` again until `input_seq` matches that sequence. The
+   snapshot then shows the effective input in `u` and the boundary at which
+   it was applied in `applied_at_sim_time`. A subsequent measurement shows
+   the applied torque under its signal name. If `input_seq` has already
+   advanced past the accepted sequence, the current snapshot alone cannot
+   confirm whether that earlier command was applied.
+
+The same requests work from a separate SIL client. Refer to
+`GET /api/signals` for each model's signal names, units and input order.
+The local server also serves its OpenAPI schema at `GET /openapi.json`.
+
+### Input errors
+
+The application reports input errors as JSON objects with an `error` string.
+
+| Status | Cause |
+| --- | --- |
+| `400` | Invalid JSON, input vector or timestamp, or unsupported transfer encoding |
+| `403` | The request fails the Host or Origin check, or HTTP is not the active controller |
+| `408` | The server timed out while reading the request body |
+| `409` | The simulation has stopped accepting commands |
+| `411` | The request lacks a valid Content-Length |
+| `413` | The body is empty or exceeds 4096 bytes |
+| `415` | The body has a content type other than `application/json` |
+
 ## Start a server from Python
 
 ```python
