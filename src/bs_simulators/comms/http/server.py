@@ -9,7 +9,7 @@ from ...runtime.protocols import SimulationPort
 from ...viewers import VIEWER_FILES
 from ..adapters import InMemoryAdapter
 from .app import _build_app
-from .middleware import _colab_host
+from .middleware import _colab_host, _colab_upstream_authority
 
 
 class _HTTPServer:
@@ -52,13 +52,17 @@ class _HTTPServer:
 
 def create_server(
     simulation: SimulationPort, *, host='127.0.0.1', port=8765, viewer=None, colab_origin=None,
+    colab_upstream_host=None,
 ):
     """Return an unstarted loopback server for a simulation.
 
     The default server hosts the viewer, the HTTP API and interactive API
     documentation at /docs. Writes use the controller identity "http".
     Pass the HTTPS origin returned by Colab as colab_origin to open a
-    read-only listener for the notebook iframe. Port 0 selects a free port.
+    read-only listener for the notebook iframe. The listener recognizes the
+    forwarded hostname for matching Colab runtime URLs. If the proxy uses a
+    different format, colab_upstream_host can set an exact forwarded authority.
+    Port 0 selects a free port.
     """
     if host not in ('127.0.0.1', 'localhost'):
         raise ValueError('the demo server must bind to loopback')
@@ -66,14 +70,16 @@ def create_server(
     if selected_viewer is not None and selected_viewer not in VIEWER_FILES:
         raise ValueError('unknown packaged viewer')
     colab_host = _colab_host(colab_origin) if colab_origin is not None else None
+    if colab_upstream_host is not None:
+        if colab_host is None:
+            raise ValueError('colab_upstream_host requires colab_origin')
+        colab_upstream_host = _colab_upstream_authority(colab_upstream_host)
     adapter = InMemoryAdapter(simulation, controller_id='http')
 
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener = socket.create_server(('127.0.0.1', port))
     try:
-        listener.bind(('127.0.0.1', port))
-        listener.listen()
         app = _build_app(adapter, viewer=selected_viewer, port=listener.getsockname()[1],
-                         colab_host=colab_host)
+                         colab_host=colab_host, colab_upstream_host=colab_upstream_host)
         return _HTTPServer(app, listener)
     except BaseException:
         listener.close()

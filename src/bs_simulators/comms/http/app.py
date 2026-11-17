@@ -60,12 +60,13 @@ _INPUT_ERROR_RESPONSES = {
 }
 
 
-def _build_app(adapter, *, viewer, port, colab_host):
+def _build_app(adapter, *, viewer, port, colab_host, colab_upstream_host=None):
     """Configure the FastAPI routes for the simulation and its viewer."""
     read_only = colab_host is not None
     app = FastAPI(title='bs-simulators', docs_url=None if read_only else '/docs',
                   redoc_url=None, openapi_url=None if read_only else '/openapi.json')
-    _install_request_policy(app, port=port, colab_host=colab_host)
+    _install_request_policy(app, port=port, colab_host=colab_host,
+                            colab_upstream_host=colab_upstream_host)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request, error):

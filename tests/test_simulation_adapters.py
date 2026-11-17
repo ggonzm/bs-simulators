@@ -1,6 +1,7 @@
 """Transport-independent controller protocols and measurement acceptance tests."""
 
 import json
+import socket
 import threading
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -315,21 +316,35 @@ def test_http_uses_structural_port_instead_of_concrete_pendulum():
         worker.join(timeout=5)
 
 
-def test_colab_listener_serves_viewer_without_exposing_control():
+@pytest.mark.parametrize('proxy_host,forwarded_host,override,rejected_host', [
+    ('notebook-port.example.test', 'runtime.internal:8007', 'runtime.internal:8007',
+     'runtime.internal:8008'),
+    ('8766-m-s-ase1a6-notebook-a.asia-east1.prod.r.colab.dev',
+     'm-s-ase1a6-notebook.asia-east1-a.c.codatalab-user-runtimes.internal:8007', None,
+     'm-s-ase1a6-someone-else.asia-east1-a.c.codatalab-user-runtimes.internal:8007'),
+    ('8766-m-s-xyz-notebook-b.us-central1.prod.r.colab.dev',
+     'm-s-xyz-notebook.us-central1-b.c.codatalab-user-runtimes.internal:8080', None,
+     'm-s-xyz-notebook.us-central1-a.c.codatalab-user-runtimes.internal:8080'),
+])
+def test_colab_listener_serves_viewer_without_exposing_control(
+    proxy_host, forwarded_host, override, rejected_host,
+):
     plant = _StructuralPlant()
-    proxy_host = 'notebook-port.example.test'
     proxy_origin = f'https://{proxy_host}'
-    server = create_server(plant, port=0, viewer='pendulum', colab_origin=proxy_origin)
+    forwarded_headers = {'Host': forwarded_host}
+    server = create_server(plant, port=0, viewer='pendulum', colab_origin=proxy_origin,
+                           colab_upstream_host=override)
     worker = threading.Thread(target=server.serve_forever)
     worker.start()
     base = f'http://127.0.0.1:{server.server_port}'
     proxy_headers = {'Host': proxy_host, 'Origin': proxy_origin}
     try:
-        for path in ('/', '/assets/viewer.js', '/api/state', '/api/signals'):
-            with urlopen(Request(base + path, headers=proxy_headers), timeout=2) as response:
-                assert response.status == 200
+        for headers in (proxy_headers, forwarded_headers, {**forwarded_headers, 'Origin': proxy_origin}):
+            for path in ('/', '/assets/viewer.js', '/api/state', '/api/signals'):
+                with urlopen(Request(base + path, headers=headers), timeout=2) as response:
+                    assert response.status == 200
 
-        for headers in (proxy_headers, {}):
+        for headers in (proxy_headers, forwarded_headers, {}):
             request = Request(base + '/api/input', data=b'{"u":[0.9]}',
                               headers={**headers, 'Content-Type': 'application/json'})
             with pytest.raises(HTTPError) as rejected:
@@ -337,8 +352,8 @@ def test_colab_listener_serves_viewer_without_exposing_control():
             assert rejected.value.code == 405
             rejected.value.close()
 
-        for headers in ({'Host': 'unexpected.example.test'},
-                        {**proxy_headers, 'Origin': 'https://unexpected.example.test'}):
+        for headers in ({'Host': rejected_host},
+                        {**forwarded_headers, 'Origin': 'https://unexpected.example.test'}):
             with pytest.raises(HTTPError) as rejected:
                 urlopen(Request(base + '/api/state', headers=headers), timeout=2)
             assert rejected.value.code == 403
@@ -348,6 +363,37 @@ def test_colab_listener_serves_viewer_without_exposing_control():
         server.shutdown()
         server.server_close()
         worker.join(timeout=5)
+
+
+def test_colab_viewer_can_restart_on_the_same_port_after_an_http_request():
+    plant = _StructuralPlant()
+    origin = 'https://notebook-port.example.test'
+    with create_server(plant, port=0, viewer='pendulum', colab_origin=origin) as server:
+        port = server.server_port
+        worker = threading.Thread(target=server.serve_forever)
+        worker.start()
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=3) as connection:
+                connection.sendall(
+                    b'GET / HTTP/1.1\r\nHost: notebook-port.example.test\r\nConnection: close\r\n\r\n'
+                )
+                with connection.makefile('rb') as response:
+                    # Wait for the server to close first, leaving its side in TIME_WAIT.
+                    assert response.read().startswith(b'HTTP/1.1 200 ')
+        finally:
+            server.server_close()
+            worker.join(timeout=5)
+
+    with create_server(plant, port=port, viewer='pendulum', colab_origin=origin) as restarted:
+        assert restarted.server_port == port
+
+
+def test_colab_upstream_host_requires_a_read_only_listener():
+    with pytest.raises(ValueError, match='requires colab_origin'):
+        create_server(_StructuralPlant(), port=0, colab_upstream_host='runtime.internal:8007')
+    with pytest.raises(ValueError, match='exact hostname'):
+        create_server(_StructuralPlant(), port=0, colab_origin='https://notebook.example.test',
+                      colab_upstream_host='*.internal')
 
 
 def test_http_cannot_spoof_the_active_controller():

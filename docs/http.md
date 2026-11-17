@@ -131,9 +131,11 @@ lines with the following cell. Use a free port in the Colab runtime.
 
 ```python
 from google.colab import output
+from urllib.parse import urlsplit
 
 port = 8766
-proxy_origin = output.eval_js(f"google.colab.kernel.proxyPort({port})")
+proxy_url = urlsplit(output.eval_js(f"google.colab.kernel.proxyPort({port})"))
+proxy_origin = f"{proxy_url.scheme}://{proxy_url.netloc}"
 server = create_server(simulation, port=port, colab_origin=proxy_origin)
 server_thread = threading.Thread(target=server.serve_forever, daemon=True)
 server_thread.start()
@@ -141,7 +143,19 @@ simulation.start()
 output.serve_kernel_port_as_iframe(port, height=650)
 ```
 
+For recognized Colab proxy URLs, the read-only listener also accepts the
+forwarded hostname for the same runtime. If the iframe returns
+`invalid local Host` with another URL format, add
+`colab_upstream_host="runtime.example.internal:8007"` to `create_server()`,
+using the exact forwarded hostname and port observed in the current
+session. Keep the public HTTPS origin in `colab_origin`. Both settings
+apply to the read-only listener.
+
 The iframe can read the simulation and render the scene. If an HTTP SIL
 controller runs in the same runtime, start a separate default server on
 another loopback port and point the controller there. Use the shutdown
 sequence above for each server you start.
+
+Before rerunning the startup cell, stop the current simulation, call
+`server.server_close()` and join the server thread. The next run can use
+the same port.

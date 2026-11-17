@@ -1,10 +1,17 @@
 """Request validation for local control and read-only Colab viewers."""
 
 import asyncio
+import re
 from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+
+_COLAB_PROXY_HOST = re.compile(
+    r'[0-9]{1,5}-(?P<runtime>m-[a-z0-9]+(?:-[a-z0-9]+)*)-(?P<zone>[a-z])'
+    r'\.(?P<region>[a-z]+(?:-[a-z]+)+[0-9]+)\.prod\.r\.colab\.dev'
+)
 
 
 def _colab_host(origin):
@@ -17,7 +24,23 @@ def _colab_host(origin):
     return parsed.netloc.lower()
 
 
-def _install_request_policy(app, *, port, colab_host):
+def _colab_upstream_authority(host):
+    """Validate an exact hostname and optional port observed behind the Colab proxy."""
+    if not isinstance(host, str) or not re.fullmatch(r'[a-zA-Z0-9.-]+(?::[0-9]{1,5})?', host):
+        raise ValueError('colab_upstream_host must be an exact hostname with an optional port')
+    urlsplit(f'//{host}').port  # Reject ports outside the permitted range.
+    return host.lower()
+
+
+def _infer_colab_upstream_host(public_host):
+    """Derive the runtime hostname for the observed Colab proxy DNS format."""
+    match = _COLAB_PROXY_HOST.fullmatch(public_host)
+    if match is None:
+        return None
+    return '{runtime}.{region}-{zone}.c.codatalab-user-runtimes.internal'.format(**match.groupdict())
+
+
+def _install_request_policy(app, *, port, colab_host, colab_upstream_host=None):
     """Apply host, origin, method and body rules to one listener."""
     read_only = colab_host is not None
     authorities = {f'127.0.0.1:{port}', f'localhost:{port}'}
@@ -25,13 +48,22 @@ def _install_request_policy(app, *, port, colab_host):
         authorities.update(('127.0.0.1', 'localhost'))
     if read_only:
         authorities.add(colab_host)
+        if colab_upstream_host is not None:
+            authorities.add(colab_upstream_host)
+    inferred_host = (_infer_colab_upstream_host(colab_host)
+                     if read_only and colab_upstream_host is None else None)
 
     @app.middleware('http')
     async def check_request(request: Request, call_next):
         host = request.headers.get('host', '').lower()
         origin = request.headers.get('origin')
-        expected_origin = f'https://{host}' if host == colab_host else f'http://{host}'
-        if host not in authorities:
+        hostname, separator, port_text = host.partition(':')
+        matches_upstream = hostname == inferred_host and (
+            not separator or (re.fullmatch(r'[0-9]{1,5}', port_text) and 0 < int(port_text) <= 65535)
+        )
+        from_colab = host in (colab_host, colab_upstream_host) or matches_upstream
+        expected_origin = f'https://{colab_host}' if from_colab else f'http://{host}'
+        if host not in authorities and not matches_upstream:
             response = JSONResponse({'error': 'invalid local Host'}, status_code=403)
         elif origin is not None and origin.lower() != expected_origin:
             response = JSONResponse({'error': 'cross-origin requests are not allowed'}, status_code=403)
