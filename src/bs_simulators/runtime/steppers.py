@@ -130,6 +130,12 @@ class ODEStepper(_ConfiguredStepper):
         ``model`` returns a finite one-dimensional derivative vector of the
         same size as x0. ``u0`` defines the complete input size and may be an
         empty vector for an autonomous plant. Time uses the model's units.
+
+        Returns
+        -------
+        None
+            Initializes this stepper in place. Read t and x for its committed
+            initial time and state; xdot is None for ODE integration.
         """
         time, state, held = self._initial_values(model, x0, t0, u0)
         _vector('model derivative', model(time, state.copy(), held), state.size)
@@ -143,6 +149,12 @@ class ODEStepper(_ConfiguredStepper):
         The model receives absolute time. Committed state changes only after
         the solver succeeds and its output has been validated. ``xdot`` remains
         None; evaluate the model separately when ODE derivatives are needed.
+
+        Returns
+        -------
+        numpy.ndarray
+            Independent one-dimensional state vector of shape ``(n_states,)``
+            at the committed endpoint. Called internally by Simulation.
         """
         target, held = self._step_values(dt, u)
         start, state, _ = self._state
@@ -238,6 +250,12 @@ class DAEStepper(_ConfiguredStepper):
         Full state and derivative sizes must match. Initial algebraic guesses
         come from x0; xdot0 supplies derivative guesses. The complete input
         vector u0 determines the input size and may be empty.
+
+        Returns
+        -------
+        None
+            Initializes this stepper in place. Read t, x and xdot for the
+            consistent initial time, state and derivatives.
         """
         time, state, held = self._initial_values(model, x0, t0, u0)
         derivative = _vector('xdot0', self._xdot0, state.size)
@@ -253,6 +271,13 @@ class DAEStepper(_ConfiguredStepper):
         correction. After integration, xdot is taken from the solver's yp
         output; it is not inferred by differencing states. All properties and
         the returned vector expose detached copies.
+
+        Returns
+        -------
+        numpy.ndarray
+            Independent one-dimensional state vector of shape ``(n_states,)``
+            at the committed endpoint. Derivatives are available separately
+            through xdot. Called internally by Simulation.
         """
         target, held = self._step_values(dt, u)
         start, previous, previous_derivative = self._state

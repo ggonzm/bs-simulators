@@ -21,8 +21,16 @@ class SignalDescriptor:
     lower: float | None = None
     upper: float | None = None
 
-    def as_dict(self):
-        """Return an independent dictionary representation suitable for transport metadata."""
+    def as_dict(self) -> dict[str, str | float | None]:
+        """Return an independent dictionary representation suitable for transport metadata.
+
+        Returns
+        -------
+        dict[str, str | float | None]
+            ``name``, ``unit``, ``dtype`` and ``direction`` are strings.
+            ``lower`` and ``upper`` are numeric bounds or None for unbounded
+            endpoints. ``dtype`` describes the signal; it does not cast values.
+        """
         return asdict(self)
 
 

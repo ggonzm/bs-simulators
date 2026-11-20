@@ -15,6 +15,7 @@ def run_simulation(configuration, *, parameters, initial, held, dt,
     simulation = None
     server = None
     server_thread = None
+    recording_error = None
     try:
         try:
             simulation = configuration.create(parameters=parameters, x0=initial, u0=held,
@@ -35,9 +36,14 @@ def run_simulation(configuration, *, parameters, initial, held, dt,
             pass
     except KeyboardInterrupt:
         pass
+    except OSError as error:
+        recording_error = error
     finally:
         if simulation is not None:
-            simulation.stop()
+            try:
+                simulation.stop()
+            except OSError as error:
+                recording_error = error
         if server is not None:
             if server_thread is not None and server_thread.ident is not None:
                 server.shutdown()
@@ -45,6 +51,9 @@ def run_simulation(configuration, *, parameters, initial, held, dt,
         if server_thread is not None and server_thread.ident is not None:
             server_thread.join()
 
+    if recording_error is not None:
+        presentation.show_error(str(recording_error))
+        raise typer.Exit(code=1)
     if simulation is not None:
         snapshot = simulation.snapshot()
         if snapshot['status'] == 'error':

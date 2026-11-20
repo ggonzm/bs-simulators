@@ -8,10 +8,12 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Mapping
-from pathlib import Path
+from os import PathLike
+from typing import Any, Self
 
 import numpy as np
 from ._validation import _finite, _vector
+from ._recording import _RecordingWorker
 from .protocols import Stepper
 from .steppers import ODEStepper
 from .signals import SignalDescriptor, validate_source_timestamp, controller_identifier
@@ -114,6 +116,10 @@ class Simulation:
         self._stepper = stepper
         stepper.initialize(self._evaluate, initial, t0=self._t0, u0=np.asarray(self._u, dtype=float))
         self._lock = threading.Lock()
+        # Recording operations and step publication share this lock. Always
+        # acquire it before _lock; solver evaluations hold neither lock.
+        self._recording_lock = threading.Lock()
+        self._recorder = None
         self._stop_event = threading.Event()
         self._thread = None
         self._pending = None
@@ -180,7 +186,7 @@ class Simulation:
         return tuple(result)
 
     @property
-    def parameters(self):
+    def parameters(self) -> dict[str, Any]:
         """Return detached model parameters for interactive inspection."""
         return copy.deepcopy(self._parameters)
 
@@ -252,29 +258,55 @@ class Simulation:
         command = self._pending or self._inflight
         return command.seq if command else None
 
-    def snapshot(self):
+    def snapshot(self) -> dict[str, Any]:
         """Return the committed model state before sensor limits.
 
         The snapshot includes the applied input vector and its saturation
         flags. Use read_measurements() for named sensor readings.
+
+        Returns
+        -------
+        dict[str, Any]
+            Detached, JSON-compatible state and metadata. ``x`` and ``u`` are
+            lists of floats; ``input_saturated`` is a list of booleans in input
+            order. DAE snapshots also contain ``xdot``. See
+            :ref:`snapshot-return-fields` for all fields and their types.
         """
         with self._lock:
             result = copy.deepcopy(self._snapshot)
             result['pending_input_seq'] = self._pending_sequence()
             result.update(self._input_metadata())
-            return result
+        return result
 
-    def describe_signals(self):
-        """Return detached metadata; direction is relative to the simulator."""
+    def describe_signals(self) -> list[dict[str, Any]]:
+        """Return detached metadata; direction is relative to the simulator.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            State descriptions, then input descriptions, then ``time`` and
+            ``status``. Each dictionary contains ``name``, ``unit``, ``dtype``,
+            ``direction`` (strings), and ``lower`` and ``upper`` (floats or
+            None). Input order defines the vector accepted by submit_input().
+        """
         return [signal.as_dict() for signal in (*self._state_signals, *self._input_signals,
                 SignalDescriptor('time', 's', 'float64', 'output'),
                 SignalDescriptor('status', '', 'string', 'output'))]
 
-    def read_measurements(self):
+    def read_measurements(self) -> dict[str, float | str]:
         """Return named sensor readings, applied inputs, time and status.
 
         State readings are clipped at configured output bounds. Use
         snapshot() to inspect the model state before sensor limits.
+
+        Returns
+        -------
+        dict[str, float | str]
+            Signal names mapped to numeric readings, including applied inputs,
+            plus ``time`` (simulated seconds, float) and ``status`` (str).
+            State readings use sensor bounds; input readings already reflect
+            actuator saturation. Sequence and saturation metadata are available
+            from snapshot(). The returned dictionary is independent of the run.
         """
         state = self.snapshot()
         values = {signal.name: self._clamp(value, signal)
@@ -284,16 +316,21 @@ class Simulation:
         return values
 
     @property
-    def active_controller(self):
+    def active_controller(self) -> str:
         """Return the controller identity currently authorized to submit inputs."""
         with self._lock:
             return self._active_controller
 
-    def configure_controller(self, controller_id):
+    def configure_controller(self, controller_id) -> None:
         """Explicitly select one controller before start.
 
         Switching while ready clears queued inputs and receipt metadata from
         the previous controller. The held initial value remains unchanged.
+
+        Returns
+        -------
+        None
+            Selection updates this simulation in place.
         """
         controller_id = controller_identifier(controller_id)
         with self._lock:
@@ -304,21 +341,35 @@ class Simulation:
                 self._pending = None
                 self._received_command = None
 
-    def set_input(self, u):
+    def set_input(self, u) -> dict[str, Any]:
         """Trusted Python convenience: submit as the configured active controller.
 
         External bridges should use InMemoryAdapter with a fixed controller_id,
         which enforces ownership instead of impersonating the active controller.
+
+        Returns
+        -------
+        dict[str, Any]
+            The same acceptance acknowledgement as submit_input(). See
+            :ref:`input-acknowledgement-fields` for its fields and types.
         """
         return self.submit_input(u, controller_id=self.active_controller)
 
-    def submit_input(self, u, *, controller_id, source_timestamp=None):
+    def submit_input(self, u, *, controller_id, source_timestamp=None) -> dict[str, Any]:
         """Validate and atomically enqueue a complete input vector.
 
         Receipt order uses local monotonic time and sequence numbers. A UTC
         source timestamp is diagnostic metadata and never schedules commands.
         Commands outside actuator bounds are clipped per input. Repeated
         values are fresh receipts; rejected commands change nothing.
+
+        Returns
+        -------
+        dict[str, Any]
+            Acceptance metadata with integer sequence numbers, controller
+            identity (str), and local receipt time (float). Acceptance does
+            not imply application. See :ref:`input-acknowledgement-fields`
+            for the complete field descriptions.
         """
         requested = _vector('u', u, self._input_size, allow_empty=True).tolist()
         values, saturated = self._saturate_input(requested)
@@ -337,14 +388,24 @@ class Simulation:
                     'accepted_input_seq': self._command_seq, 'applied_input_seq': self._input_seq,
                     'controller_id': controller_id, 'received_at_monotonic': self._pending.received_at}
 
-    def start(self, *, duration=None, record=None, dt_real=None):
+    def start(self, *, duration=None, record=None, dt_real=None) -> Self:
         """Start a worker; optionally record initial state and each committed step.
 
         ``duration`` is in simulated seconds. It must be a whole number of
         fixed steps so recorded time and requested duration agree exactly.
         ``record`` is a JSONL path, created exclusively to avoid overwrites.
+        Its time fields use capture-relative origins, beginning at zero even
+        when the model starts at a nonzero t0. Captures can later be changed
+        with start_recording() or closed with stop_recording().
         ``dt_real`` is the positive interval between step deadlines in wall-clock
         seconds. It defaults to ``dt``. The solver always advances by ``dt``.
+
+        Returns
+        -------
+        Self
+            This simulation instance after starting its worker thread. The
+            worker may still be running when this method returns. Use wait()
+            to wait for completion, or stop() to request shutdown.
         """
         period = self.dt if dt_real is None else _finite('dt_real', dt_real, positive=True)
         steps = None
@@ -356,18 +417,118 @@ class Simulation:
             steps = int(round(count))
             if steps < 1:
                 raise ValueError('duration must include at least one step')
-        with self._lock:
+        with self._recording_lock, self._lock:
             if self._status != 'ready':
                 raise RuntimeError('simulation has already been started or stopped')
-            stream = Path(record).open('x', encoding='utf-8') if record is not None else None
+            initial = copy.deepcopy(self._snapshot)
+            initial.update(self._input_metadata())
+            initial.update(status='running', wall_elapsed=0.0,
+                           pending_input_seq=self._pending_sequence())
+            if record is not None:
+                self._recorder = _RecordingWorker()
+                try:
+                    self._recorder.request('start', initial, record).wait()
+                except BaseException:
+                    self._recorder.finish(initial)
+                    self._recorder.wait()
+                    raise
             self._dt_real = period
             self._started = time.monotonic()
             self._status = 'running'
             self._snapshot = self._build_snapshot(0.0)
-            self._thread = threading.Thread(target=self._run, args=(steps, stream),
+            self._thread = threading.Thread(target=self._run, args=(steps,),
                                             name='simulation', daemon=False)
-            self._thread.start()
+            try:
+                self._thread.start()
+            except BaseException:
+                self._thread = None
+                self._status = 'ready'
+                self._started = None
+                self._snapshot = self._build_snapshot(0.0)
+                if self._recorder is not None:
+                    self._recorder.finish(dict(self._snapshot))
+                    self._recorder.wait()
+                raise
         return self
+
+    def start_recording(self, path: str | PathLike[str]) -> None:
+        """Begin a capture, replacing any active capture at a committed state.
+
+        Parameters
+        ----------
+        path : str or os.PathLike[str]
+            New JSONL destination, created exclusively. Parent directories must
+            exist. The file starts with the latest committed state at t=0.
+
+        Returns
+        -------
+        None
+            The capture is active and its initial row has been flushed when
+            this method returns. The model and worker keep their global clock.
+
+        Raises
+        ------
+        RuntimeError
+            If the simulation is not running or shutdown has been requested.
+        OSError
+            If the file cannot be opened or written. A failed opening or
+            initial write leaves the previous capture active.
+
+        Notes
+        -----
+        A change uses the latest published state, even during integration of
+        the next step. No intermediate solver state is recorded. The previous
+        file ends and the new file begins at that same committed boundary.
+        The old file is closed after the new initial row is written; if closing
+        the old file fails, the new capture remains active and the error is
+        raised to the caller. See :ref:`capture-time-fields` for time fields.
+        File operations run on a dedicated writer. Confirmation is awaited
+        after releasing simulation locks, allowing physics to continue.
+        """
+        with self._recording_lock:
+            with self._lock:
+                if self._status != 'running' or self._stop_event.is_set():
+                    raise RuntimeError('recording requires a running simulation')
+            state = self._recording_snapshot()
+            if self._recorder is None or not self._recorder.alive:
+                self._recorder = _RecordingWorker()
+            request = self._recorder.request('start', state, path)
+        request.wait()
+
+    def stop_recording(self) -> None:
+        """Finish the active capture while the plant continues running.
+
+        Returns
+        -------
+        None
+            The final committed state has been written and the file closed.
+            Calling this method with no active capture has no effect. The
+            final row may repeat the preceding row's simulated time.
+
+        Raises
+        ------
+        OSError
+            If writing or closing fails. The capture is detached and its
+            stream is closed; the caller receives the error. Stored background
+            writer errors are also raised here while physics keeps running.
+        """
+        with self._recording_lock:
+            recorder = self._recorder
+            if recorder is None:
+                return
+            request = (recorder.request('stop', self._recording_snapshot())
+                       if recorder.accepting else None)
+        if request is not None:
+            request.wait()
+        else:
+            recorder.wait()
+            recorder.raise_error()
+
+    def _recording_snapshot(self):
+        """Read a committed boundary with current wall time while holding the recording lock."""
+        state = self.snapshot()
+        state['wall_elapsed'] = time.monotonic() - self._started
+        return state
 
     def _wait_until(self, deadline):
         """Wait for a wall-clock deadline, returning true on a stop request."""
@@ -378,16 +539,14 @@ class Simulation:
             remaining = deadline - time.monotonic()
         return self._stop_event.wait(max(0.0, remaining))
 
-    def _run(self, steps, stream):
+    def _run(self, steps):
         """Pace fixed intervals, apply held inputs and publish completed steps from the worker thread.
 
         Freeze inputs before waiting for each deadline; publish state only after a
-        successful step. Record initial, committed and terminal snapshots when a
-        stream is supplied, then close it even if integration or recording fails.
+        successful step. Serialize publication with queue insertion. The writer
+        owns file I/O and drains its queue independently when physics finishes.
         """
         try:
-            if stream is not None:
-                stream.write(json.dumps(self.snapshot(), allow_nan=False) + '\n')
             while not self._stop_event.is_set() and (steps is None or self._seq < steps):
                 with self._lock:
                     command = self._pending
@@ -403,50 +562,55 @@ class Simulation:
                 if self._wait_until(deadline):
                     break
                 self._stepper.step(self.dt, held)
-                with self._lock:
-                    self._u = held
-                    self._input_seq = input_seq
-                    if command is not None:
-                        self._applied_command = command
-                        self._input_saturated = command.saturated
-                    self._applied_at = applied_at
-                    self._inflight = None
-                    self._seq += 1
-                    self._snapshot = self._build_snapshot(time.monotonic() - self._started)
-                    recorded = dict(self._snapshot)
-                if stream is not None:
-                    stream.write(json.dumps(recorded, allow_nan=False) + '\n')
+                with self._recording_lock:
+                    with self._lock:
+                        self._u = held
+                        self._input_seq = input_seq
+                        if command is not None:
+                            self._applied_command = command
+                            self._input_saturated = command.saturated
+                        self._applied_at = applied_at
+                        self._inflight = None
+                        self._seq += 1
+                        self._snapshot = self._build_snapshot(time.monotonic() - self._started)
+                        recorded = dict(self._snapshot)
+                    if self._recorder is not None:
+                        self._recorder.publish(recorded)
         except Exception as exc:
-            with self._lock:
+            with self._recording_lock, self._lock:
                 self._status = 'error'
                 self._error = f'{type(exc).__name__}: {exc}'
         finally:
-            with self._lock:
-                if self._status != 'error':
-                    self._status = 'finished' if steps is not None and self._seq >= steps else 'stopped'
-                self._pending = None
-                self._inflight = None
-                self._snapshot = self._build_snapshot(time.monotonic() - self._started)
-                terminal = dict(self._snapshot)
-            if stream is not None:
-                try:
-                    stream.write(json.dumps(terminal, allow_nan=False) + '\n')
-                    stream.close()
-                except Exception as exc:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-                    with self._lock:
-                        self._status = 'error'
-                        self._error = f'{type(exc).__name__}: {exc}'
-                        self._snapshot = self._build_snapshot(time.monotonic() - self._started)
+            with self._recording_lock:
+                with self._lock:
+                    if self._status != 'error':
+                        self._status = 'finished' if steps is not None and self._seq >= steps else 'stopped'
+                    self._pending = None
+                    self._inflight = None
+                    self._snapshot = self._build_snapshot(time.monotonic() - self._started)
+                    terminal = dict(self._snapshot)
+                if self._recorder is not None:
+                    self._recorder.finish(terminal)
 
-    def wait(self, timeout=None):
-        """Wait for completion and return whether this run has stopped.
+    def wait(self, timeout=None) -> bool:
+        """Wait for physics completion and for the recording writer to finish.
 
         ``timeout`` is an optional nonnegative number of wall-clock seconds.
         This method does not advance the model or request a stop.
+
+        Returns
+        -------
+        bool
+            True when physics and recording have stopped, including completion,
+            explicit stop, or failure. False if either is still running after the timeout,
+            or if the simulation has never been started or stopped. True
+            does not imply success; inspect snapshot() for status and error.
+
+        Raises
+        ------
+        OSError
+            If the recording writer failed. This is raised after both workers
+            finish and is independent of the plant's execution status.
         """
         if timeout is not None:
             timeout = _finite('timeout', timeout, nonnegative=True)
@@ -455,17 +619,44 @@ class Simulation:
             return self._status != 'ready'
         if thread is threading.current_thread():
             raise RuntimeError('the simulation worker cannot wait for itself')
+        began = time.monotonic()
         thread.join(timeout)
-        return not thread.is_alive()
+        if thread.is_alive():
+            return False
+        remaining = None if timeout is None else max(0.0, timeout - (time.monotonic() - began))
+        recorder = self._recorder
+        if recorder is not None:
+            if not recorder.wait(remaining):
+                return False
+            recorder.raise_error()
+        return True
 
-    def stop(self):
-        """Request shutdown and wait for the in-flight integration to complete."""
+    def stop(self) -> None:
+        """Request shutdown and wait for integration and queued recording to finish.
+
+        Returns
+        -------
+        None
+            Shutdown updates this simulation in place. From the worker itself,
+            the method requests shutdown without waiting for its own thread.
+
+        Raises
+        ------
+        OSError
+            If the recording writer failed. Physics has stopped and the writer
+            has released its file before this error is propagated to the caller.
+        """
         self._stop_event.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join()
-        with self._lock:
+        with self._recording_lock, self._lock:
             if self._status == 'ready':
                 self._status = 'stopped'
                 self._pending = None
                 self._snapshot = self._build_snapshot(0.0)
+                if self._recorder is not None:
+                    self._recorder.finish(dict(self._snapshot))
+        if self._recorder is not None and thread is not threading.current_thread():
+            self._recorder.wait()
+            self._recorder.raise_error()

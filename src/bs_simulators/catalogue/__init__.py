@@ -15,9 +15,12 @@ from importlib import resources
 import inspect
 from pathlib import Path
 import tomllib
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ._validation import _configuration_values, _document_fields, _stepper_spec, _text
+
+if TYPE_CHECKING:
+    from ..runtime.core import Simulation
 
 
 __all__ = ['SimulationConfiguration', 'list_configurations',
@@ -56,7 +59,7 @@ class SimulationConfiguration:
             object.__setattr__(self, key, value)
 
     def create(self, *, parameters=None, x0=None, u0=None, dt=None,
-               active_controller=None, stepper=None):
+               active_controller=None, stepper=None) -> Simulation:
         """Return a new Simulation with optional, detached user overrides.
 
         Only public benchmark_systems.models functions are selected by name.
@@ -65,6 +68,13 @@ class SimulationConfiguration:
         mapping or an explicitly supplied fresh Stepper instance. t0, signal
         descriptions and viewer settings come from the configuration. This
         method never saves a TOML file or modifies the configuration source.
+
+        Returns
+        -------
+        Simulation
+            A fresh, unstarted simulation in the ``ready`` state. Call start()
+            on the returned object to launch its worker. Repeated calls create
+            independent runs when each uses its own stepper.
         """
         configuration = replace(self)
         # Numerical imports happen only when a simulation is requested.
@@ -140,7 +150,14 @@ class SimulationConfiguration:
 
 
 def list_configurations() -> list[str]:
-    """List bundled configuration names without importing numerical modules."""
+    """List bundled configuration names without importing numerical modules.
+
+    Returns
+    -------
+    list[str]
+        Alphabetically sorted names without the ``.toml`` extension, suitable
+        for passing to load_configuration().
+    """
     return sorted(item.name[:-5] for item in resources.files(__package__).iterdir()
                   if item.is_file() and item.name.endswith('.toml'))
 
@@ -155,7 +172,15 @@ def _load_document(text, default_name):
 
 
 def load_configuration(name: str) -> SimulationConfiguration:
-    """Read a bundled TOML configuration using package resources."""
+    """Read a bundled TOML configuration using package resources.
+
+    Returns
+    -------
+    SimulationConfiguration
+        Validated construction data loaded in memory. Inspect its attributes
+        or call create() to construct a simulation. Loading does not start a
+        worker or change the bundled file.
+    """
     _text('configuration name', name)
     available = list_configurations()
     if name not in available:
@@ -170,6 +195,12 @@ def load_configuration_file(path) -> SimulationConfiguration:
     Required fields are model, parameters, x0 and u0. Missing optional name
     defaults to the file stem. Parsing/schema errors raise ValueError; file
     access errors retain their usual OSError subclasses.
+
+    Returns
+    -------
+    SimulationConfiguration
+        Validated construction data from the supplied path. Loading does not
+        start a simulation or write to the source file.
     """
     path = Path(path)
     return _load_document(path.read_text(encoding='utf-8'), path.stem)

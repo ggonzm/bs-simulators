@@ -23,12 +23,13 @@ class SimulationPort(Protocol):
         Returns
         -------
         dict[str, Any]
-            Model-specific state and execution metadata. The pendulum includes
+            Model-specific state and execution metadata. Simulation includes
             simulated time ``t``, state vector ``x``, applied input ``u``, and
             execution ``status``. ``Simulation`` also reports ``input_saturated``,
             with one flag per applied input. Its sequence fields distinguish accepted,
             pending, and applied inputs. Transport adapters pass this data
             through without assuming a particular state-vector layout.
+            See :ref:`snapshot-return-fields` for Simulation's complete schema.
 
         Notes
         -----
@@ -100,10 +101,11 @@ class SimulationPort(Protocol):
         Returns
         -------
         dict[str, Any]
-            Acceptance acknowledgement. The pendulum returns
+            Acceptance acknowledgement. Simulation returns
             ``accepted_input_seq`` and ``applied_input_seq`` to distinguish
             receipt from physical application. Its snapshot reports the
             committed input sequence as ``input_seq``.
+            See :ref:`input-acknowledgement-fields` for its complete schema.
 
         Raises
         ------
@@ -160,6 +162,12 @@ class Stepper(Protocol):
         DAE implementations may make algebraic values consistent while
         preserving the configured fixed states. Reinitializing a bound
         stepper must raise RuntimeError rather than sharing its state.
+
+        Returns
+        -------
+        None
+            Initialization updates the stepper in place. Committed values are
+            available through t, x and xdot.
         """
         ...
 
@@ -170,5 +178,11 @@ class Stepper(Protocol):
         leave committed state unchanged on validation or solver failure.
         Simulation calls this method internally; it is not a separate
         public execution mode.
+
+        Returns
+        -------
+        numpy.ndarray
+            Independent one-dimensional state vector of shape ``(n_states,)``
+            at the newly committed endpoint.
         """
         ...

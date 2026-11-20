@@ -18,6 +18,27 @@ from bs_simulators.cli import app
 runner = CliRunner()
 
 
+def test_background_recording_error_is_presented_and_resources_are_released(tmp_path, monkeypatch):
+    from bs_simulators.runtime import _recording
+
+    write = _recording._Recording.write
+
+    def fail_write(recording, state):
+        if state['seq'] > 0:
+            raise OSError('disk write failed')
+        write(recording, state)
+
+    monkeypatch.setattr(_recording._Recording, 'write', fail_write)
+    before = set(threading.enumerate())
+    result = runner.invoke(app, ['--catalogue', 'pendulum', '--port', '0',
+                                 '--duration', '0.02', '--record', str(tmp_path / 'failure.jsonl')])
+    assert result.exit_code == 1
+    assert 'disk write failed' in result.output
+    assert not isinstance(result.exception, OSError)
+    assert set(threading.enumerate()) <= before
+    assert_listener_closed(result.output)
+
+
 def assert_listener_closed(output):
     match = re.search(r'http://127\.0\.0\.1:(\d+)/', output)
     assert match, output

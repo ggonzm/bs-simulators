@@ -32,19 +32,19 @@ class _HTTPServer:
     def __exit__(self, *exc):
         self.server_close()
 
-    def serve_forever(self, poll_interval=0.5):
+    def serve_forever(self, poll_interval=0.5) -> None:
         """Serve until shutdown is requested. Accept the legacy poll argument."""
         with self._serving:
             if not self._server.should_exit:
                 self._server.run(sockets=[self._listener])
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Signal Uvicorn and wait for the serving thread to release the socket."""
         self._server.should_exit = True
         with self._serving:
             pass
 
-    def server_close(self):
+    def server_close(self) -> None:
         """Stop serving and release the listening socket."""
         self.shutdown()
         self._listener.close()
@@ -53,7 +53,7 @@ class _HTTPServer:
 def create_server(
     simulation: SimulationPort, *, host='127.0.0.1', port=8765, viewer=None, colab_origin=None,
     colab_upstream_host=None,
-):
+) -> _HTTPServer:
     """Return an unstarted loopback server for a simulation.
 
     The default server hosts the viewer, the HTTP API and interactive API
@@ -63,6 +63,18 @@ def create_server(
     forwarded hostname for matching Colab runtime URLs. If the proxy uses a
     different format, colab_upstream_host can set an exact forwarded authority.
     Port 0 selects a free port.
+
+    Returns
+    -------
+    _HTTPServer
+        A bound server with an allocated socket, ready to serve. Its
+        ``server_address`` is a ``(host, port)`` tuple and ``server_port`` is
+        an integer. Run ``serve_forever()`` in a separate thread to serve
+        requests; it blocks until shutdown and returns None. ``shutdown()``
+        waits for serving to end and returns None. ``server_close()`` also
+        closes the listener and returns None. The object supports use as a
+        context manager, which closes it on exit. Creating the server does
+        not start the simulation.
     """
     if host not in ('127.0.0.1', 'localhost'):
         raise ValueError('the demo server must bind to loopback')
