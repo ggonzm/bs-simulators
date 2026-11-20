@@ -50,6 +50,34 @@ not publish a partially integrated state or mark its command as applied.
 `Simulation`, while the narrower observation/control protocol below leaves
 lifecycle ownership with the application.
 
+## Runtime threads and synchronization
+
+| Thread | Responsibilities |
+| --- | --- |
+| Application thread | Submit inputs, inspect snapshots, request capture changes and manage lifecycle. |
+| Simulation worker | Select inputs, pace and integrate intervals, publish committed states and append samples to the rolling buffer. |
+| Recording worker | Merge retained samples and capture requests in order, serialize JSON and perform all recording file operations. Created on the first capture. |
+
+`Simulation._lock` protects published state, input commands and metadata.
+`Simulation._recording_lock` orders step publication and capture-request
+submission. When both are needed, recording coordination is acquired first.
+Integration runs outside both locks. During a running experiment, capture
+methods release those locks before waiting for the writer's confirmation.
+
+The writer uses a condition variable to protect its pending sample buffer,
+capture requests and internal status. It swaps out a batch under that lock
+and performs serialization and disk I/O after releasing it. Sample-buffer
+overwrites can create gaps in a recording while the model keeps advancing.
+Capture requests are preserved and ordered with retained samples. See
+[Record and replay](recording.md#writer-thread-and-rolling-sample-buffer).
+
+`wait()` and `stop()` include writer completion so that files are closed
+before a successful return. Slow storage can therefore delay the calling
+thread after physics has finished. The recording writer reports file errors
+through capture/lifecycle calls, independently of the plant's execution
+status. Python scheduling, short lock contention and numerical workload
+continue to govern soft real-time timing.
+
 ## Controllers and adapters
 
 `SimulationPort` exposes `snapshot()`, `read_measurements()`,

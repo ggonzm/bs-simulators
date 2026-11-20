@@ -18,6 +18,32 @@ and reports the lag in wall-clock seconds.
 
 See {ref}`execution cadence <execution-cadence>` for setup examples.
 
+## Why does a recording start at zero while the viewer shows a later time?
+
+Each capture has its own time origin. `start_recording()` records the latest
+committed state at `t=0`, including when a previous capture has already ended.
+The model, live snapshots and viewer keep the plant's global simulated time.
+Recorded `seq` and command sequences also retain their global values.
+`applied_at_sim_time` can be negative in a capture when the held input was
+applied before recording began.
+
+Closing a capture appends the latest committed state, so its final simulated
+time can repeat. Its `status` describes the plant and can still be `"running"`
+after `stop_recording()` closes the file. See {ref}`capture-time-fields`.
+
+## Why are there gaps in a recording?
+
+The recording writer consumes a circular buffer of pending samples. When it
+falls behind and that buffer fills, new samples replace its oldest pending
+samples. The plant continues advancing, and retained samples keep their
+original `t` and global `seq`. A jump from sequence 101 to 108 means six
+intermediate samples are absent. Initial/final capture states and file-change
+requests are preserved. See
+[the rolling sample buffer](recording.md#writer-thread-and-rolling-sample-buffer).
+
+File-system failures are raised by capture or finalization calls. A failed
+recording can coexist with a running or successfully finished plant.
+
 ## Why do the snapshot and the sensor reading differ?
 
 Use `snapshot()` or `GET /api/state` to inspect the committed model state

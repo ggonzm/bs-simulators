@@ -27,11 +27,101 @@ boundary without exposing internal locks or implementation helpers.
 
 ### Simulation
 
+`start()` returns the same simulation instance (`Self`), so
+`simulation = configuration.create().start()` is valid. It starts a worker
+and returns while the run proceeds. `wait()` returns a `bool` indicating
+whether execution has stopped; inspect `snapshot()["status"]` to distinguish
+completion from failure. `wait()` also waits for the recording writer using
+the same timeout budget. `stop()` and `configure_controller()` return `None`.
+The `parameters` property returns a detached `dict[str, Any]`, and
+`active_controller` returns a `str`.
+
+`start_recording(path)` starts or changes a capture on a running simulation.
+`stop_recording()` closes that capture while the plant keeps running. Both
+return `None`. They wait for confirmation outside the running plant's locks.
+Background file errors are raised by `stop_recording()` or by `wait()`/`stop()`
+at finalization while physics retains its own execution status. Each file starts at `t = 0`; see
+{ref}`capture-time-fields` for the recorded time fields and the
+[recording guide](recording.md) for examples.
+
 ```{eval-rst}
 .. autoclass:: bs_simulators.runtime.core.Simulation
    :members:
    :special-members: __init__
 ```
+
+(snapshot-return-fields)=
+### Snapshot return fields
+
+`Simulation.snapshot()` returns a detached `dict[str, Any]`. Arrays are
+represented as Python lists, so the result can also be serialized as JSON.
+Reading or editing the returned data does not advance or modify the model.
+The state and applied input describe the latest committed integration result.
+Receipt and pending-command metadata are refreshed at read time and can
+describe commands awaiting application.
+
+| Field | Python type | Meaning |
+| --- | --- | --- |
+| `t` | `float` | Absolute simulated time in seconds, starting at `t0`. |
+| `x` | `list[float]` | Model state in configured order, before sensor limits. |
+| `u` | `list[float]` | Applied input in configured order, after actuator saturation. |
+| `input_saturated` | `list[bool]` | One flag per applied input, true when clipping changed its requested value. |
+| `xdot` | `list[float]` | DAE derivatives in state order. Present only when the stepper supplies derivatives. |
+| `seq` | `int` | Number of committed integration intervals, initially zero. |
+| `input_seq` | `int` | Sequence of the applied command, or zero for the initial input. |
+| `pending_input_seq` | `int` or `None` | Latest queued or in-flight command sequence, or `None` when none exists. |
+| `applied_at_sim_time` | `float` | Simulated boundary time at which the held input was applied. Initially `t0`. |
+| `wall_elapsed` | `float` | Wall-clock seconds elapsed at the committed snapshot, zero before start. |
+| `lag` | `float` | Nonnegative delay in wall-clock seconds relative to the target cadence. |
+| `status` | `str` | Execution status, described below. |
+| `parameters` | `dict[str, Any]` | Detached physical model parameters. |
+| `model` | `str` | Model identifier used by the simulation. |
+| `viewer` | `str` or `None` | Selected viewer identifier, if configured. |
+| `active_controller` | `str` | Controller currently authorized to submit inputs. |
+| `controller_id` | `str` or `None` | Controller of the applied command, or `None` before a command is applied. |
+| `received_input_seq` | `int` | Latest accepted command sequence, or zero before any receipt. |
+| `received_at_monotonic` | `float` or `None` | Local monotonic receipt time of the latest accepted command. |
+| `source_timestamp` | `str` or `None` | Optional UTC timestamp supplied with the applied command. |
+| `received_source_timestamp` | `str` or `None` | Optional UTC timestamp supplied with the latest accepted command. |
+| `applied_received_at_monotonic` | `float` or `None` | Local monotonic receipt time of the applied command. |
+| `error` | `str` | Failure description, present only when an error has been recorded. |
+
+`status` is `"ready"` before start, `"running"` during execution,
+`"finished"` after the requested duration, `"stopped"` after an explicit stop,
+or `"error"` after a worker failure. A stopped or completed instance cannot
+be restarted.
+
+Monotonic timestamps are local clock readings in seconds. Their differences
+measure receipt intervals; their absolute values are unrelated to simulated
+time or UTC. Source timestamps are ISO 8601 UTC strings supplied by the
+controller and remain optional diagnostic metadata.
+
+`read_measurements()` returns a detached `dict[str, float | str]` keyed by
+signal name. State readings are clipped at sensor bounds, input readings
+contain applied actuator values, `time` is simulated time in seconds, and
+`status` is the execution status. The state names and order come from
+`describe_signals()`. See {ref}`snapshot-and-measurements` for an example of
+the difference between model state and sensor readings.
+
+(input-acknowledgement-fields)=
+### Input acknowledgement fields
+
+`set_input()` and `submit_input()` return `dict[str, Any]` with the following
+fields. `InMemoryAdapter.write_inputs()` and `write_signals()` forward the
+same acknowledgement when connected to a `Simulation`.
+
+| Field | Python type | Meaning |
+| --- | --- | --- |
+| `input_seq` | `int` | Sequence allocated to this accepted command. |
+| `pending_input_seq` | `int` | The same newly accepted sequence at receipt time. |
+| `accepted_input_seq` | `int` | Explicit name for the accepted sequence, equal to `input_seq`. |
+| `applied_input_seq` | `int` | Sequence already applied when the acknowledgement was created. |
+| `controller_id` | `str` | Identity of the submitting controller. |
+| `received_at_monotonic` | `float` | Local monotonic receipt time in seconds. |
+
+The acknowledgement confirms receipt. A later snapshot identifies the
+command actually applied through its `input_seq`. A newer command can replace
+an earlier pending command before application.
 
 ### Numerical steppers
 
